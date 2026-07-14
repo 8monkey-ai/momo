@@ -107,18 +107,24 @@ func (f *fakeRespond) wait(t *testing.T, n int) []string {
 	return nil
 }
 
-func incomingText(contactID int64, text string) []byte {
+func webhookBody(eventType string, contactID, messageID, assigneeID int64, text string) []byte {
+	c := map[string]any{"id": contactID}
+	if assigneeID != 0 {
+		c["assignee"] = map[string]any{"id": assigneeID}
+	}
 	b, _ := json.Marshal(map[string]any{
-		"event_type": "message.received",
-		"event_id":   "test-event",
-		"contact":    map[string]any{"id": contactID, "firstName": "Test"},
+		"event_type": eventType,
+		"contact":    c,
 		"message": map[string]any{
-			"messageId": 42,
-			"traffic":   "incoming",
+			"messageId": messageID,
 			"message":   map[string]any{"type": "text", "text": text},
 		},
 	})
 	return b
+}
+
+func incomingText(contactID int64, text string) []byte {
+	return webhookBody("message.received", contactID, 42, 0, text)
 }
 
 func TestEndToEnd(t *testing.T) {
@@ -221,6 +227,102 @@ func TestSignatureVerification(t *testing.T) {
 	}
 }
 
+func TestAssigneeGate(t *testing.T) {
+	bin := buildTestAgent(t)
+	fake := &fakeRespond{}
+	respondSrv := httptest.NewServer(fake.handler())
+	defer respondSrv.Close()
+
+	cfg := config{
+		respondToken:    "test-token",
+		respondBaseURL:  respondSrv.URL,
+		agentCmd:        []string{bin},
+		dataDir:         t.TempDir(),
+		incomingCommand: "/add-user-message",
+		aiAssigneeID:    471663,
+	}
+	srv := newServer(cfg)
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// Assigned to someone else: recorded via the slash command (record-only
+	// turn), nothing delivered back.
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.received", 11, 42, 999, "human is handling"))))
+	time.Sleep(500 * time.Millisecond)
+	fake.mu.Lock()
+	if len(fake.messages) != 0 {
+		t.Errorf("expected no deliveries for other assignee, got %q", fake.messages)
+	}
+	fake.mu.Unlock()
+
+	// Assigned to the AI user: replied to normally.
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.received", 11, 42, 471663, "for the ai"))))
+	msgs := fake.wait(t, 2)
+	if msgs[0] != "You said: for the ai" {
+		t.Errorf("ai-assigned message = %q", msgs[0])
+	}
+
+	// Unassigned: also replied to.
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(incomingText(11, "unassigned"))))
+	msgs = fake.wait(t, 4)
+	if msgs[2] != "You said: unassigned" {
+		t.Errorf("unassigned message = %q", msgs[2])
+	}
+}
+
+// Outgoing messages in a conversation assigned to the AI user are our own
+// replies; they must be skipped even when the echo filter has no record of
+// them (e.g. after a server restart).
+func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
+	bin := buildTestAgent(t)
+	fake := &fakeRespond{}
+	respondSrv := httptest.NewServer(fake.handler())
+	defer respondSrv.Close()
+
+	cfg := config{
+		respondToken:    "test-token",
+		respondBaseURL:  respondSrv.URL,
+		agentCmd:        []string{bin},
+		dataDir:         t.TempDir(),
+		outgoingCommand: "/add-assistant-message",
+		aiAssigneeID:    471663,
+	}
+	srv := newServer(cfg)
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// Assigned to the AI: no harness turn at all — no contact dir appears.
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 13, 777, 471663, "our own reply"))))
+	time.Sleep(500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(cfg.dataDir, "13")); !os.IsNotExist(err) {
+		t.Errorf("AI-assigned outgoing message spawned a harness turn")
+	}
+
+	// Assigned to a human: recorded as a record-only turn (harness spawns,
+	// nothing delivered back).
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 13, 778, 999, "human operator reply"))))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(cfg.dataDir, "13")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("human-assigned outgoing message never reached the harness")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.messages) != 0 {
+		t.Errorf("record-only turn delivered messages: %q", fake.messages)
+	}
+}
+
 func TestOutgoingEchoFiltered(t *testing.T) {
 	bin := buildTestAgent(t)
 	fake := &fakeRespond{}
@@ -245,29 +347,13 @@ func TestOutgoingEchoFiltered(t *testing.T) {
 
 	// Echo of our own message (messageId 1) must be ignored: no new turn,
 	// no new deliveries.
-	echo, _ := json.Marshal(map[string]any{
-		"event_type": "message.sent",
-		"contact":    map[string]any{"id": 9},
-		"message": map[string]any{
-			"messageId": 1,
-			"traffic":   "outgoing",
-			"message":   map[string]any{"type": "text", "text": "You said: hi"},
-		},
-	})
-	http.Post(ts.URL+"/webhook", "application/json", strings.NewReader(string(echo)))
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 9, 1, 0, "You said: hi"))))
 
 	// An operator-sent message must reach the harness as a record-only turn:
 	// the harness sees it, but nothing is delivered back to respond.io.
-	operator, _ := json.Marshal(map[string]any{
-		"event_type": "message.sent",
-		"contact":    map[string]any{"id": 9},
-		"message": map[string]any{
-			"messageId": 555,
-			"traffic":   "outgoing",
-			"message":   map[string]any{"type": "text", "text": "operator reply"},
-		},
-	})
-	http.Post(ts.URL+"/webhook", "application/json", strings.NewReader(string(operator)))
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 9, 555, 0, "operator reply"))))
 
 	time.Sleep(500 * time.Millisecond)
 	fake.mu.Lock()

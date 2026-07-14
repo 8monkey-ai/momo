@@ -91,6 +91,15 @@ func validSignature(body []byte, signature, key string) bool {
 }
 
 func (s *server) handleIncoming(ev webhookEvent) {
+	// Only reply when the conversation is assigned to the AI user (or to no
+	// one); a human assignee owns the conversation, so just record the message
+	// into the harness context.
+	if a := ev.Contact.Assignee; s.cfg.aiAssigneeID != 0 && a != nil && a.ID != s.cfg.aiAssigneeID {
+		if s.cfg.incomingCommand != "" {
+			s.record(ev, s.cfg.incomingCommand)
+		}
+		return
+	}
 	blocks, err := s.contentBlocks(ev)
 	if err != nil {
 		log.Printf("contact %d: %v", ev.Contact.ID, err)
@@ -108,23 +117,36 @@ func (s *server) handleIncoming(ev webhookEvent) {
 	}
 }
 
-// handleOutgoing records messages sent to the contact by others (agents,
-// workflows) into the harness context via the configured slash command.
-// Messages this server sent are skipped to avoid echo loops.
-func (s *server) handleOutgoing(ev webhookEvent) {
-	if s.respond.wasSentByUs(ev.Message.MessageID) {
-		return
-	}
+// record appends a text message to the harness context via a slash command
+// without generating a reply (record-only turn). Non-text messages are
+// dropped: they can't ride a slash command.
+func (s *server) record(ev webhookEvent, command string) {
 	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
 		return
 	}
 	// Single line: ACP adapters split the slash command from its args at the
 	// first space, so the message must follow on the same line.
-	prompt := s.cfg.outgoingCommand + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
+	prompt := command + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
 	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
 	if err != nil {
-		log.Printf("contact %d: outgoing: %v", ev.Contact.ID, err)
+		log.Printf("contact %d: record %s: %v", ev.Contact.ID, command, err)
 	}
+}
+
+// handleOutgoing records messages sent to the contact by others (human
+// operators, workflows) into the harness context via the configured slash
+// command. Messages this server sent are skipped to avoid echo loops.
+func (s *server) handleOutgoing(ev webhookEvent) {
+	// A conversation assigned to the AI user only produces outgoing messages
+	// through us; skip them even when the in-memory echo filter lost track
+	// (e.g. across server restarts).
+	if a := ev.Contact.Assignee; s.cfg.aiAssigneeID != 0 && a != nil && a.ID == s.cfg.aiAssigneeID {
+		return
+	}
+	if s.respond.wasSentByUs(ev.Message.MessageID) {
+		return
+	}
+	s.record(ev, s.cfg.outgoingCommand)
 }
 
 // contentBlocks translates a respond.io message into ACP content blocks.

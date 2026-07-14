@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -263,7 +264,6 @@ func (m *manager) watch(contactID int64, s *userSession) {
 func (s *userSession) shutdown() {
 	if s.cmd.Process != nil {
 		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
-		s.cmd.Process.Kill()
 	}
 	s.cmd.Wait()
 }
@@ -275,9 +275,22 @@ func (s *userSession) shutdown() {
 // message respawns it with session/load — the rebuild the command needs anyway.
 const recordTurnTimeout = 15 * time.Second
 
+var errHarnessGone = errors.New("harness died mid-prompt")
+
 // prompt runs one turn. If a turn is already streaming, it steers: cancels the
 // active turn, then queues the new prompt (prompt turns are serialized by mu).
+// A prompt that was queued behind a harness recycle (record-only turn timeout)
+// finds its session dead; retry once with a freshly spawned harness.
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
+	err := m.promptOnce(ctx, contactID, blocks, deliver)
+	if errors.Is(err, errHarnessGone) {
+		log.Printf("contact %d: harness died mid-prompt, retrying with a fresh one", contactID)
+		err = m.promptOnce(ctx, contactID, blocks, deliver)
+	}
+	return err
+}
+
+func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
 	s, err := m.sessionFor(ctx, contactID)
 	if err != nil {
 		return err
@@ -324,6 +337,16 @@ func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.Cont
 			log.Printf("contact %d: record-only turn done (harness never resolved it), recycling harness", contactID)
 			s.shutdown()
 			return nil
+		}
+		select {
+		case <-s.conn.Done():
+			m.mu.Lock()
+			if m.users[contactID] == s {
+				delete(m.users, contactID)
+			}
+			m.mu.Unlock()
+			return errHarnessGone
+		default:
 		}
 		return fmt.Errorf("prompt: %w", err)
 	}

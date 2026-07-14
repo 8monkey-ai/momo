@@ -11,28 +11,25 @@ import (
 )
 
 // Webhook payload shapes per https://developers.respond.io/docs/webhooks
-// (New Incoming Message / New Outgoing Message).
+// (New Incoming Message / New Outgoing Message), trimmed to the fields we use.
 
 type webhookEvent struct {
 	EventType string       `json:"event_type"`
-	EventID   string       `json:"event_id"`
 	Contact   contact      `json:"contact"`
 	Message   eventMessage `json:"message"`
 }
 
 type contact struct {
-	ID        int64  `json:"id"`
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	Phone     string `json:"phone"`
-	Email     string `json:"email"`
+	ID       int64     `json:"id"`
+	Assignee *assignee `json:"assignee"` // nil when the conversation is unassigned
+}
+
+type assignee struct {
+	ID int64 `json:"id"`
 }
 
 type eventMessage struct {
 	MessageID int64          `json:"messageId"`
-	ChannelID int64          `json:"channelId"`
-	Traffic   string         `json:"traffic"`
-	Timestamp int64          `json:"timestamp"`
 	Message   messageContent `json:"message"`
 }
 

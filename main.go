@@ -19,6 +19,8 @@ type config struct {
 	contactTemplate string
 	typingPerChar   time.Duration
 	outgoingCommand string
+	incomingCommand string
+	aiAssigneeID    int64
 
 	incomingSigningKey string
 	outgoingSigningKey string
@@ -33,6 +35,7 @@ func loadConfig() (config, error) {
 		dataDir:         envOr("DATA_DIR", "./data"),
 		contactTemplate: os.Getenv("CONTACT_TEMPLATE"),
 		outgoingCommand: os.Getenv("OUTGOING_COMMAND"),
+		incomingCommand: os.Getenv("INCOMING_COMMAND"),
 
 		incomingSigningKey: os.Getenv("INCOMING_SIGNING_KEY"),
 		outgoingSigningKey: os.Getenv("OUTGOING_SIGNING_KEY"),
@@ -48,6 +51,12 @@ func loadConfig() (config, error) {
 		return cfg, fmt.Errorf("TYPING_DELAY_MS_PER_CHAR: %w", err)
 	}
 	cfg.typingPerChar = time.Duration(ms) * time.Millisecond
+	if v := os.Getenv("AI_ASSIGNEE_ID"); v != "" {
+		cfg.aiAssigneeID, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return cfg, fmt.Errorf("AI_ASSIGNEE_ID: %w", err)
+		}
+	}
 	return cfg, nil
 }
 
