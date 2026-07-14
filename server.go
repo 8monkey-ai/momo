@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
 )
@@ -40,9 +44,29 @@ func (s *server) routes() http.Handler {
 // respond.io retries slow deliveries, and a prompt turn far outlives the
 // webhook timeout.
 func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	var ev webhookEvent
-	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
 		http.Error(w, "bad payload", http.StatusBadRequest)
+		return
+	}
+	var ev webhookEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		http.Error(w, "bad payload", http.StatusBadRequest)
+		return
+	}
+
+	// Each registered webhook has its own signing key: HMAC-SHA256 over the
+	// raw body, base64, in X-Webhook-Signature.
+	var key string
+	switch ev.EventType {
+	case "message.received":
+		key = s.cfg.incomingSigningKey
+	case "message.sent":
+		key = s.cfg.outgoingSigningKey
+	}
+	if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
+		log.Printf("rejected %q webhook: invalid signature", ev.EventType)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -57,6 +81,13 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	default:
 		log.Printf("ignoring event %q", ev.EventType)
 	}
+}
+
+func validSignature(body []byte, signature, key string) bool {
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write(body)
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(signature), []byte(expected))
 }
 
 func (s *server) handleIncoming(ev webhookEvent) {
@@ -87,7 +118,9 @@ func (s *server) handleOutgoing(ev webhookEvent) {
 	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
 		return
 	}
-	prompt := s.cfg.outgoingCommand + "\n" + ev.Message.Message.Text
+	// Single line: ACP adapters split the slash command from its args at the
+	// first space, so the message must follow on the same line.
+	prompt := s.cfg.outgoingCommand + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
 	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
 	if err != nil {
 		log.Printf("contact %d: outgoing: %v", ev.Contact.ID, err)

@@ -35,8 +35,11 @@ respond.io ◀──REST API ─────  (this binary) ◀── session/up
 
 ## Webhooks
 
-Register these in respond.io (Settings → Integrations → Webhook), pointing at
-`https://<host>/webhook`:
+Register these in respond.io (Settings → Integrations → Webhook), pointing both at
+the same URL, `https://<host>/webhook` (the server dispatches on `event_type`).
+Each registered webhook has its own signing key; set them via
+`INCOMING_SIGNING_KEY` / `OUTGOING_SIGNING_KEY` and the server verifies the
+`X-Webhook-Signature` header (base64 HMAC-SHA256 of the raw body) per event:
 
 - **New Incoming Message** (`message.received`) — required. Each text message becomes
   a prompt turn.
@@ -51,6 +54,8 @@ Register these in respond.io (Settings → Integrations → Webhook), pointing a
 | Env var | Default | Description |
 | --- | --- | --- |
 | `RESPOND_API_TOKEN` | — (required) | respond.io API bearer token |
+| `INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
+| `OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
 | `AGENT_CMD` | — (required) | Harness command, e.g. `claude-code-acp` or `gemini --experimental-acp` |
 | `PORT` | `8080` | HTTP listen port |
 | `DATA_DIR` | `./data` | Per-contact working dirs and session store |

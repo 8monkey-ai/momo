@@ -19,6 +19,9 @@ type config struct {
 	contactTemplate string
 	typingPerChar   time.Duration
 	outgoingCommand string
+
+	incomingSigningKey string
+	outgoingSigningKey string
 }
 
 func loadConfig() (config, error) {
@@ -30,6 +33,9 @@ func loadConfig() (config, error) {
 		dataDir:         envOr("DATA_DIR", "./data"),
 		contactTemplate: os.Getenv("CONTACT_TEMPLATE"),
 		outgoingCommand: os.Getenv("OUTGOING_COMMAND"),
+
+		incomingSigningKey: os.Getenv("INCOMING_SIGNING_KEY"),
+		outgoingSigningKey: os.Getenv("OUTGOING_SIGNING_KEY"),
 	}
 	if cfg.respondToken == "" {
 		return cfg, fmt.Errorf("RESPOND_API_TOKEN is required")

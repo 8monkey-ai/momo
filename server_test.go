@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -169,6 +172,52 @@ func TestEndToEnd(t *testing.T) {
 	json.Unmarshal(b, &store)
 	if store["7"] != "test-session" {
 		t.Errorf("session store = %v", store)
+	}
+}
+
+func TestSignatureVerification(t *testing.T) {
+	body := incomingText(1, "hi")
+	key := "test-signing-key"
+
+	fake := &fakeRespond{}
+	respondSrv := httptest.NewServer(fake.handler())
+	defer respondSrv.Close()
+
+	cfg := config{
+		respondToken:       "test-token",
+		respondBaseURL:     respondSrv.URL,
+		agentCmd:           []string{buildTestAgent(t)},
+		dataDir:            t.TempDir(),
+		incomingSigningKey: key,
+	}
+	srv := newServer(cfg)
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	post := func(sig string) int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/webhook", strings.NewReader(string(body)))
+		if sig != "" {
+			req.Header.Set("X-Webhook-Signature", sig)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Errorf("missing signature: got %d, want 401", code)
+	}
+	if code := post("bm90LXRoZS1zaWduYXR1cmU="); code != http.StatusUnauthorized {
+		t.Errorf("wrong signature: got %d, want 401", code)
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write(body)
+	valid := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	if code := post(valid); code != http.StatusOK {
+		t.Errorf("valid signature: got %d, want 200", code)
 	}
 }
 
