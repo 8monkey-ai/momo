@@ -150,6 +150,9 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		return nil, err
 	}
+	if err := seedContactDir(cwd, m.cfg.contactTemplate); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.Command(m.cfg.agentCmd[0], m.cfg.agentCmd[1:]...)
 	cmd.Dir = cwd
@@ -204,6 +207,36 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	m.store.put(contactID, string(resp.SessionId))
 	m.watch(contactID, s)
 	return s, nil
+}
+
+// seedContactDir symlinks the template's entries into the contact dir so the
+// harness finds its project config (e.g. gato's .pi/, AGENTS.md) in the
+// session cwd. Existing entries are left alone; .git is skipped.
+func seedContactDir(cwd, template string) error {
+	if template == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(template)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return fmt.Errorf("contact template: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name() == ".git" {
+			continue
+		}
+		link := filepath.Join(cwd, e.Name())
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(abs, e.Name()), link); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // watch drops the session from the registry when the harness exits.

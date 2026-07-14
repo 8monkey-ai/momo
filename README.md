@@ -16,7 +16,9 @@ respond.io ◀──REST API ─────  (this binary) ◀── session/up
   The respond.io contact ID is the routing key; the harness issues the session ID.
 - **Per-contact working directory** (`DATA_DIR/<contactId>`), passed as the session
   `cwd`. This is how the harness identifies the user and where it persists their chat
-  history — returning users continue their previous conversation.
+  history — returning users continue their previous conversation. With
+  `CONTACT_TEMPLATE` set, each contact dir is seeded with symlinks to a project
+  template so the harness picks up its config (system prompt, packages, skills).
 - **Session resume**: the contact→session mapping is persisted in
   `DATA_DIR/sessions.json`; if the harness supports `session/load`, conversations
   survive agent-server restarts.
@@ -52,6 +54,7 @@ Register these in respond.io (Settings → Integrations → Webhook), pointing a
 | `AGENT_CMD` | — (required) | Harness command, e.g. `claude-code-acp` or `gemini --experimental-acp` |
 | `PORT` | `8080` | HTTP listen port |
 | `DATA_DIR` | `./data` | Per-contact working dirs and session store |
+| `CONTACT_TEMPLATE` | — (off) | Directory whose entries are symlinked into each contact's cwd (e.g. a [gato](https://github.com/8monkey-ai/gato) checkout, so the harness finds its `.pi/` project config) |
 | `TYPING_DELAY_MS_PER_CHAR` | `30` | Typing simulation; delay = chars × this (capped at 10s) |
 | `OUTGOING_COMMAND` | — (off) | Slash command prefix for recording operator messages |
 | `RESPOND_API_URL` | `https://api.respond.io/v2` | Override for testing |

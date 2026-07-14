@@ -16,6 +16,7 @@ type config struct {
 	respondBaseURL  string
 	agentCmd        []string
 	dataDir         string
+	contactTemplate string
 	typingPerChar   time.Duration
 	outgoingCommand string
 }
@@ -27,6 +28,7 @@ func loadConfig() (config, error) {
 		respondBaseURL:  envOr("RESPOND_API_URL", "https://api.respond.io/v2"),
 		agentCmd:        strings.Fields(os.Getenv("AGENT_CMD")),
 		dataDir:         envOr("DATA_DIR", "./data"),
+		contactTemplate: os.Getenv("CONTACT_TEMPLATE"),
 		outgoingCommand: os.Getenv("OUTGOING_COMMAND"),
 	}
 	if cfg.respondToken == "" {
