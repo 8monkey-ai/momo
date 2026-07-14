@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 )
@@ -157,6 +159,11 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	cmd := exec.Command(m.cfg.agentCmd[0], m.cfg.agentCmd[1:]...)
 	cmd.Dir = cwd
 	cmd.Stderr = os.Stderr
+	// Own process group so shutdown can SIGKILL the harness and its children
+	// together: a gracefully-quitting child may run shutdown hooks that break
+	// session resume (e.g. pi-session-gzip compresses the history file, which
+	// pi-acp's session/load then cannot read).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -255,10 +262,18 @@ func (m *manager) watch(contactID int64, s *userSession) {
 
 func (s *userSession) shutdown() {
 	if s.cmd.Process != nil {
+		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 		s.cmd.Process.Kill()
 	}
 	s.cmd.Wait()
 }
+
+// recordTurnTimeout bounds record-only turns (outgoing slash commands): pi
+// handles extension commands without starting an agent loop, so pi-acp never
+// resolves the prompt (pi-acp bug). The command's effect is persisted to the
+// session file almost immediately; on timeout we kill the harness so the next
+// message respawns it with session/load — the rebuild the command needs anyway.
+const recordTurnTimeout = 15 * time.Second
 
 // prompt runs one turn. If a turn is already streaming, it steers: cancels the
 // active turn, then queues the new prompt (prompt turns are serialized by mu).
@@ -266,6 +281,12 @@ func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.Cont
 	s, err := m.sessionFor(ctx, contactID)
 	if err != nil {
 		return err
+	}
+
+	if deliver == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, recordTurnTimeout)
+		defer cancel()
 	}
 
 	s.turnMu.Lock()
@@ -296,6 +317,14 @@ func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.Cont
 
 	if err != nil {
 		t.finish(false)
+		// A timed-out record-only turn wedges pi-acp's queue behind the
+		// never-resolving prompt; kill the harness so the next message
+		// respawns it (session/load) with the recorded message applied.
+		if deliver == nil && ctx.Err() == context.DeadlineExceeded {
+			log.Printf("contact %d: record-only turn done (harness never resolved it), recycling harness", contactID)
+			s.shutdown()
+			return nil
+		}
 		return fmt.Errorf("prompt: %w", err)
 	}
 	t.finish(resp.StopReason != acp.StopReasonCancelled)
