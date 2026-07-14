@@ -2,9 +2,8 @@
 
 Go service bridging respond.io (messaging platform) webhooks to ACP (Agent Client
 Protocol) harnesses — one harness subprocess per contact, replies delivered back
-through the respond.io API paced like human typing. See README.md for architecture
-and REQUIREMENTS.md for the spec. Single flat `main` package; work happens on the
-`feat/agent-server` branch (PR #1).
+through the respond.io API paced like human typing. See README.md for architecture.
+Single flat `main` package; work happens on the `feat/agent-server` branch (PR #1).
 
 ## Commands
 
@@ -57,9 +56,8 @@ agent config (local checkout: `~/Projects/hebo-gato`). Things that will bite you
 
 ## e2e debugging tricks
 
-- Wrap the harness to capture ACP wire traffic:
-  `AGENT_CMD=/tmp/pi-acp-tee.sh` where the script is
-  `tee -a /tmp/wire-in.jsonl | pi-acp | tee -a /tmp/wire-out.jsonl`.
+- To capture ACP wire traffic, shadow `pi-acp` earlier on the `PATH` with a
+  wrapper script: `tee -a /tmp/wire-in.jsonl | pi-acp | tee -a /tmp/wire-out.jsonl`.
 - The ngrok inspector (`http://127.0.0.1:4040/api/tunnels`, then port 4041, 4042…
   for additional agents) shows which local port each tunnel maps to and lets you
   replay/inspect webhook bodies.

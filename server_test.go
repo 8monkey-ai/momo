@@ -54,15 +54,14 @@ func TestTypingDelayCapped(t *testing.T) {
 	}
 }
 
-func buildTestAgent(t *testing.T) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "testagent")
-	cmd := exec.Command("go", "build", "-o", bin, "./testagent")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building testagent: %v\n%s", err, out)
+// testAgentBin compiles the stub harness once for the whole test run.
+var testAgentBin = sync.OnceValue(func() string {
+	bin := filepath.Join(os.TempDir(), "agent-server-testagent")
+	if out, err := exec.Command("go", "build", "-o", bin, "./testagent").CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("building testagent: %v\n%s", err, out))
 	}
 	return bin
-}
+})
 
 // fakeRespond captures messages the server sends back to respond.io.
 type fakeRespond struct {
@@ -128,7 +127,7 @@ func incomingText(contactID int64, text string) []byte {
 }
 
 func TestEndToEnd(t *testing.T) {
-	bin := buildTestAgent(t)
+	bin := testAgentBin()
 	fake := &fakeRespond{}
 	respondSrv := httptest.NewServer(fake.handler())
 	defer respondSrv.Close()
@@ -136,7 +135,7 @@ func TestEndToEnd(t *testing.T) {
 	cfg := config{
 		respondToken:   "test-token",
 		respondBaseURL: respondSrv.URL,
-		agentCmd:       []string{bin},
+		agentCmd:       bin,
 		dataDir:        t.TempDir(),
 	}
 	srv := newServer(cfg)
@@ -192,7 +191,7 @@ func TestSignatureVerification(t *testing.T) {
 	cfg := config{
 		respondToken:       "test-token",
 		respondBaseURL:     respondSrv.URL,
-		agentCmd:           []string{buildTestAgent(t)},
+		agentCmd:           testAgentBin(),
 		dataDir:            t.TempDir(),
 		incomingSigningKey: key,
 	}
@@ -228,7 +227,7 @@ func TestSignatureVerification(t *testing.T) {
 }
 
 func TestAssigneeGate(t *testing.T) {
-	bin := buildTestAgent(t)
+	bin := testAgentBin()
 	fake := &fakeRespond{}
 	respondSrv := httptest.NewServer(fake.handler())
 	defer respondSrv.Close()
@@ -236,7 +235,7 @@ func TestAssigneeGate(t *testing.T) {
 	cfg := config{
 		respondToken:    "test-token",
 		respondBaseURL:  respondSrv.URL,
-		agentCmd:        []string{bin},
+		agentCmd:        bin,
 		dataDir:         t.TempDir(),
 		incomingCommand: "/add-user-message",
 		aiAssigneeID:    471663,
@@ -277,7 +276,7 @@ func TestAssigneeGate(t *testing.T) {
 // replies; they must be skipped even when the echo filter has no record of
 // them (e.g. after a server restart).
 func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
-	bin := buildTestAgent(t)
+	bin := testAgentBin()
 	fake := &fakeRespond{}
 	respondSrv := httptest.NewServer(fake.handler())
 	defer respondSrv.Close()
@@ -285,7 +284,7 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	cfg := config{
 		respondToken:    "test-token",
 		respondBaseURL:  respondSrv.URL,
-		agentCmd:        []string{bin},
+		agentCmd:        bin,
 		dataDir:         t.TempDir(),
 		outgoingCommand: "/add-assistant-message",
 		aiAssigneeID:    471663,
@@ -324,7 +323,7 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 }
 
 func TestOutgoingEchoFiltered(t *testing.T) {
-	bin := buildTestAgent(t)
+	bin := testAgentBin()
 	fake := &fakeRespond{}
 	respondSrv := httptest.NewServer(fake.handler())
 	defer respondSrv.Close()
@@ -332,7 +331,7 @@ func TestOutgoingEchoFiltered(t *testing.T) {
 	cfg := config{
 		respondToken:    "test-token",
 		respondBaseURL:  respondSrv.URL,
-		agentCmd:        []string{bin},
+		agentCmd:        bin,
 		dataDir:         t.TempDir(),
 		outgoingCommand: "/operator-note",
 	}

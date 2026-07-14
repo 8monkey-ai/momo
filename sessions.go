@@ -157,7 +157,7 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 		return nil, err
 	}
 
-	cmd := exec.Command(m.cfg.agentCmd[0], m.cfg.agentCmd[1:]...)
+	cmd := exec.Command(m.cfg.agentCmd)
 	cmd.Dir = cwd
 	cmd.Stderr = os.Stderr
 	// Own process group so shutdown can SIGKILL the harness and its children

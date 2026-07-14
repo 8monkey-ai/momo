@@ -1,12 +1,12 @@
 # agent-server
 
-A bridge between [respond.io](https://respond.io) and any agent harness that speaks the
-[Agent Client Protocol (ACP)](https://agentclientprotocol.com). It receives respond.io
-webhooks, drives one harness subprocess per contact over ACP, and sends the agent's
-replies back through the respond.io API — paced like human typing.
+A bridge between [respond.io](https://respond.io) and [pi-acp](https://github.com/svkozak/pi-acp),
+the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) harness for pi. It
+receives respond.io webhooks, drives one harness subprocess per contact over ACP, and
+sends the agent's replies back through the respond.io API — paced like human typing.
 
 ```
-respond.io ──webhook POST──▶  agent-server  ──JSON-RPC/stdio──▶ ACP harness (per contact)
+respond.io ──webhook POST──▶  agent-server  ──JSON-RPC/stdio──▶ pi-acp (per contact)
 respond.io ◀──REST API ─────  (this binary) ◀── session/update ─┘
 ```
 
@@ -59,7 +59,6 @@ Each registered webhook has its own signing key; set them via
 | `RESPOND_API_TOKEN` | — (required) | respond.io API bearer token |
 | `INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
 | `OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
-| `AGENT_CMD` | — (required) | Harness command, e.g. `claude-code-acp` or `gemini --experimental-acp` |
 | `PORT` | `8080` | HTTP listen port |
 | `DATA_DIR` | `./data` | Per-contact working dirs and session store |
 | `CONTACT_TEMPLATE` | — (off) | Directory whose entries are symlinked into each contact's cwd (e.g. a [gato](https://github.com/8monkey-ai/gato) checkout, so the harness finds its `.pi/` project config) |
@@ -72,8 +71,10 @@ Each registered webhook has its own signing key; set them via
 ## Run
 
 ```sh
-RESPOND_API_TOKEN=... AGENT_CMD="gemini --experimental-acp" go run .
+RESPOND_API_TOKEN=... go run .
 ```
+
+`pi-acp` must be on the `PATH` (`npm install -g pi-acp`).
 
 ## Test
 

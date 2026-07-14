@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -14,7 +13,7 @@ type config struct {
 	port            string
 	respondToken    string
 	respondBaseURL  string
-	agentCmd        []string
+	agentCmd        string // the pi-acp harness; overridden only in tests
 	dataDir         string
 	contactTemplate string
 	typingPerChar   time.Duration
@@ -31,7 +30,7 @@ func loadConfig() (config, error) {
 		port:            envOr("PORT", "8080"),
 		respondToken:    os.Getenv("RESPOND_API_TOKEN"),
 		respondBaseURL:  envOr("RESPOND_API_URL", "https://api.respond.io/v2"),
-		agentCmd:        strings.Fields(os.Getenv("AGENT_CMD")),
+		agentCmd:        "pi-acp",
 		dataDir:         envOr("DATA_DIR", "./data"),
 		contactTemplate: os.Getenv("CONTACT_TEMPLATE"),
 		outgoingCommand: os.Getenv("OUTGOING_COMMAND"),
@@ -42,9 +41,6 @@ func loadConfig() (config, error) {
 	}
 	if cfg.respondToken == "" {
 		return cfg, fmt.Errorf("RESPOND_API_TOKEN is required")
-	}
-	if len(cfg.agentCmd) == 0 {
-		return cfg, fmt.Errorf("AGENT_CMD is required (e.g. \"claude-code-acp\" or \"gemini --experimental-acp\")")
 	}
 	ms, err := strconv.Atoi(envOr("TYPING_DELAY_MS_PER_CHAR", "30"))
 	if err != nil {
@@ -76,6 +72,6 @@ func main() {
 		log.Fatal(err)
 	}
 	srv := newServer(cfg)
-	log.Printf("agent-server listening on :%s (harness: %s)", cfg.port, strings.Join(cfg.agentCmd, " "))
+	log.Printf("agent-server listening on :%s", cfg.port)
 	log.Fatal(http.ListenAndServe(":"+cfg.port, srv.routes()))
 }
