@@ -275,6 +275,10 @@ func (s *userSession) shutdown() {
 // message respawns it with session/load — the rebuild the command needs anyway.
 const recordTurnTimeout = 15 * time.Second
 
+// promptTurnTimeout bounds how long we wait on the harness to resolve a
+// prompt turn before giving up on the reply.
+const promptTurnTimeout = 30 * time.Minute
+
 var errHarnessGone = errors.New("harness died mid-prompt")
 
 // prompt runs one turn. If a turn is already streaming, it steers: cancels the
@@ -296,11 +300,12 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		return err
 	}
 
+	turnTimeout := promptTurnTimeout
 	if deliver == nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, recordTurnTimeout)
-		defer cancel()
+		turnTimeout = recordTurnTimeout
 	}
+	ctx, cancel := context.WithTimeout(ctx, turnTimeout)
+	defer cancel()
 
 	s.turnMu.Lock()
 	steering := s.currentTurn != nil
@@ -314,7 +319,7 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	t := newTurn(deliver, m.cfg.typingPerChar)
+	t := newTurn(deliver, m.cfg.typingPerWord)
 	s.turnMu.Lock()
 	s.currentTurn = t
 	s.turnMu.Unlock()

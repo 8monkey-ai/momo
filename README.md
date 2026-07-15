@@ -63,7 +63,7 @@ Each registered webhook has its own signing key; set them via
 | `PORT` | `8080` | HTTP listen port |
 | `DATA_DIR` | `./data` | Per-contact working dirs and session store |
 | `CONTACT_TEMPLATE` | — (off) | Directory whose entries are symlinked into each contact's cwd (e.g. a [gato](https://github.com/8monkey-ai/gato) checkout, so the harness finds its `.pi/` project config) |
-| `TYPING_DELAY_MS_PER_CHAR` | `30` | Typing simulation; delay = chars × this (capped at 10s) |
+| `TYPING_DELAY_MS_PER_WORD` | `1000` | Typing simulation; delay = words × this |
 | `RESPOND_AI_ASSIGNEE_ID` | — (off) | respond.io user id the AI replies for; conversations assigned to anyone else are record-only |
 | `RESPOND_API_URL` | `https://api.respond.io/v2` | Override for testing |
 

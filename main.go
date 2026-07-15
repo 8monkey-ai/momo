@@ -50,7 +50,7 @@ type config struct {
 	contactTemplate string
 
 	// reply delivery
-	typingPerChar time.Duration
+	typingPerWord time.Duration
 }
 
 func loadConfig() (config, error) {
@@ -65,7 +65,7 @@ func loadConfig() (config, error) {
 		agentCmd:           "pi-acp",
 		dataDir:            env.str("DATA_DIR", "./data"),
 		contactTemplate:    os.Getenv("CONTACT_TEMPLATE"),
-		typingPerChar:      time.Duration(env.int("TYPING_DELAY_MS_PER_CHAR", 30)) * time.Millisecond,
+		typingPerWord:      time.Duration(env.int("TYPING_DELAY_MS_PER_WORD", 1000)) * time.Millisecond,
 	}, env.err
 }
 

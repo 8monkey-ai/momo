@@ -48,9 +48,9 @@ func TestChunkingCancelledDropsTail(t *testing.T) {
 	}
 }
 
-func TestTypingDelayCapped(t *testing.T) {
-	if d := typingDelay(strings.Repeat("x", 100000), 30*time.Millisecond); d != maxTypingDelay {
-		t.Fatalf("got %v, want cap %v", d, maxTypingDelay)
+func TestTypingDelayPerWord(t *testing.T) {
+	if d := typingDelay("three word reply", time.Second); d != 3*time.Second {
+		t.Fatalf("got %v, want 3s", d)
 	}
 }
 
