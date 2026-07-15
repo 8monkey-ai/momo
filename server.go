@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -21,6 +22,10 @@ const (
 	recordIncomingCommand = "/add-user-message"
 	recordOutgoingCommand = "/add-assistant-message"
 )
+
+// A reply containing a video URL is delivered as a video attachment instead
+// of text, so the contact gets a playable video rather than a link.
+var videoURLPattern = regexp.MustCompile(`(?i)https?://\S+\.(mp4|mov|webm)\b`)
 
 type server struct {
 	cfg     config
@@ -99,6 +104,9 @@ func (s *server) handleIncoming(ev webhookEvent) {
 		return
 	}
 	deliver := func(text string) error {
+		if url := videoURLPattern.FindString(text); url != "" {
+			return s.respond.sendAttachment(ev.Contact.ID, "video", url)
+		}
 		return s.respond.sendText(ev.Contact.ID, text)
 	}
 	if err := s.mgr.prompt(context.Background(), ev.Contact.ID, blocks, deliver); err != nil {

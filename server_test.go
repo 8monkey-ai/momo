@@ -48,6 +48,26 @@ func TestChunkingCancelledDropsTail(t *testing.T) {
 	}
 }
 
+func TestVideoURLPattern(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{"https://cdn.example.com/clips/demo.mp4", "https://cdn.example.com/clips/demo.mp4"},
+		{"Here you go: https://cdn.example.com/Demo.MP4 enjoy!", "https://cdn.example.com/Demo.MP4"},
+		{"http://any-host.io/v.webm", "http://any-host.io/v.webm"},
+		{"https://x.io/a.mov", "https://x.io/a.mov"},
+		{"see example.com/demo.mp4", ""}, // no scheme
+		{"plain text without links", ""},
+		{"https://x.io/doc.pdf", ""},
+	}
+	for _, tt := range tests {
+		if got := videoURLPattern.FindString(tt.text); got != tt.want {
+			t.Errorf("FindString(%q) = %q, want %q", tt.text, got, tt.want)
+		}
+	}
+}
+
 func TestTypingDelayPerWord(t *testing.T) {
 	if d := typingDelay("three word reply", time.Second); d != 3*time.Second {
 		t.Fatalf("got %v, want 3s", d)
@@ -63,7 +83,8 @@ var testAgentBin = sync.OnceValue(func() string {
 	return bin
 })
 
-// fakeRespond captures messages the server sends back to respond.io.
+// fakeRespond captures messages the server sends back to respond.io. Text
+// messages are recorded as their text, attachments as "type:url".
 type fakeRespond struct {
 	mu       sync.Mutex
 	messages []string
@@ -73,13 +94,15 @@ type fakeRespond struct {
 func (f *fakeRespond) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Message struct {
-				Text string `json:"text"`
-			} `json:"message"`
+			Message messageContent `json:"message"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		msg := body.Message.Text
+		if a := body.Message.Attachment; a != nil {
+			msg = a.Type + ":" + a.URL
+		}
 		f.mu.Lock()
-		f.messages = append(f.messages, body.Message.Text)
+		f.messages = append(f.messages, msg)
 		f.nextID++
 		id := f.nextID
 		f.mu.Unlock()
@@ -106,6 +129,39 @@ func (f *fakeRespond) wait(t *testing.T, n int) []string {
 	return nil
 }
 
+// setupServer starts a fake respond.io backend and the agent server wired to
+// it, filling in the config fields every test shares. Test-specific fields
+// (signing keys, aiAssigneeID) come in via cfg.
+func setupServer(t *testing.T, cfg config) (*fakeRespond, *httptest.Server, config) {
+	t.Helper()
+	fake := &fakeRespond{}
+	respondSrv := httptest.NewServer(fake.handler())
+	t.Cleanup(respondSrv.Close)
+	cfg.apiToken = "test-token"
+	cfg.apiBaseURL = respondSrv.URL
+	cfg.agentCmd = testAgentBin()
+	cfg.dataDir = t.TempDir()
+	ts := httptest.NewServer(newServer(cfg).routes())
+	t.Cleanup(ts.Close)
+	return fake, ts, cfg
+}
+
+// waitForDir blocks until path exists; a contact dir appearing is the
+// observable side effect of a harness turn (including record-only turns).
+func waitForDir(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func webhookBody(eventType string, contactID, messageID, assigneeID int64, text string) []byte {
 	c := map[string]any{"id": contactID}
 	if assigneeID != 0 {
@@ -127,20 +183,7 @@ func incomingText(contactID int64, text string) []byte {
 }
 
 func TestEndToEnd(t *testing.T) {
-	bin := testAgentBin()
-	fake := &fakeRespond{}
-	respondSrv := httptest.NewServer(fake.handler())
-	defer respondSrv.Close()
-
-	cfg := config{
-		apiToken:   "test-token",
-		apiBaseURL: respondSrv.URL,
-		agentCmd:   bin,
-		dataDir:    t.TempDir(),
-	}
-	srv := newServer(cfg)
-	ts := httptest.NewServer(srv.routes())
-	defer ts.Close()
+	fake, ts, cfg := setupServer(t, config{})
 
 	resp, err := http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(incomingText(7, "hello agent"))))
@@ -180,24 +223,27 @@ func TestEndToEnd(t *testing.T) {
 	}
 }
 
+// A reply paragraph containing a video URL is delivered as a video attachment;
+// paragraphs without one stay plain text.
+func TestVideoReplyDeliveredAsAttachment(t *testing.T) {
+	fake, ts, _ := setupServer(t, config{})
+
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(incomingText(8, "watch https://cdn.example.com/demo.mp4 now"))))
+
+	msgs := fake.wait(t, 2)
+	if msgs[0] != "video:https://cdn.example.com/demo.mp4" {
+		t.Errorf("first message = %q, want video attachment", msgs[0])
+	}
+	if msgs[1] != "Second paragraph." {
+		t.Errorf("second message = %q", msgs[1])
+	}
+}
+
 func TestSignatureVerification(t *testing.T) {
 	body := incomingText(1, "hi")
 	key := "test-signing-key"
-
-	fake := &fakeRespond{}
-	respondSrv := httptest.NewServer(fake.handler())
-	defer respondSrv.Close()
-
-	cfg := config{
-		apiToken:           "test-token",
-		apiBaseURL:         respondSrv.URL,
-		agentCmd:           testAgentBin(),
-		dataDir:            t.TempDir(),
-		incomingSigningKey: key,
-	}
-	srv := newServer(cfg)
-	ts := httptest.NewServer(srv.routes())
-	defer ts.Close()
+	_, ts, _ := setupServer(t, config{incomingSigningKey: key})
 
 	post := func(sig string) int {
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/webhook", strings.NewReader(string(body)))
@@ -227,21 +273,7 @@ func TestSignatureVerification(t *testing.T) {
 }
 
 func TestAssigneeGate(t *testing.T) {
-	bin := testAgentBin()
-	fake := &fakeRespond{}
-	respondSrv := httptest.NewServer(fake.handler())
-	defer respondSrv.Close()
-
-	cfg := config{
-		apiToken:     "test-token",
-		apiBaseURL:   respondSrv.URL,
-		agentCmd:     bin,
-		dataDir:      t.TempDir(),
-		aiAssigneeID: 471663,
-	}
-	srv := newServer(cfg)
-	ts := httptest.NewServer(srv.routes())
-	defer ts.Close()
+	fake, ts, _ := setupServer(t, config{aiAssigneeID: 471663})
 
 	// Assigned to someone else: recorded via the slash command (record-only
 	// turn), nothing delivered back.
@@ -275,21 +307,7 @@ func TestAssigneeGate(t *testing.T) {
 // replies; they must be skipped even when the echo filter has no record of
 // them (e.g. after a server restart).
 func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
-	bin := testAgentBin()
-	fake := &fakeRespond{}
-	respondSrv := httptest.NewServer(fake.handler())
-	defer respondSrv.Close()
-
-	cfg := config{
-		apiToken:     "test-token",
-		apiBaseURL:   respondSrv.URL,
-		agentCmd:     bin,
-		dataDir:      t.TempDir(),
-		aiAssigneeID: 471663,
-	}
-	srv := newServer(cfg)
-	ts := httptest.NewServer(srv.routes())
-	defer ts.Close()
+	fake, ts, cfg := setupServer(t, config{aiAssigneeID: 471663})
 
 	// Assigned to the AI: no harness turn at all — no contact dir appears.
 	http.Post(ts.URL+"/webhook", "application/json",
@@ -303,16 +321,7 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	// nothing delivered back).
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(webhookBody("message.sent", 13, 778, 999, "human operator reply"))))
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(cfg.dataDir, "13")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("human-assigned outgoing message never reached the harness")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForDir(t, filepath.Join(cfg.dataDir, "13"))
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	if len(fake.messages) != 0 {
@@ -321,36 +330,30 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 }
 
 func TestOutgoingEchoFiltered(t *testing.T) {
-	bin := testAgentBin()
-	fake := &fakeRespond{}
-	respondSrv := httptest.NewServer(fake.handler())
-	defer respondSrv.Close()
-
-	cfg := config{
-		apiToken:   "test-token",
-		apiBaseURL: respondSrv.URL,
-		agentCmd:   bin,
-		dataDir:    t.TempDir(),
-	}
-	srv := newServer(cfg)
-	ts := httptest.NewServer(srv.routes())
-	defer ts.Close()
+	fake, ts, cfg := setupServer(t, config{})
 
 	// Trigger a normal turn so the server records the messageIds it sent.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(incomingText(9, "hi"))))
 	fake.wait(t, 2)
 
-	// Echo of our own message (messageId 1) must be ignored: no new turn,
-	// no new deliveries.
+	// The filter matches on messageId alone, so the echo and operator events
+	// below use fresh contact ids: whether a record-only turn ran is then
+	// observable as that contact's dir appearing.
+
+	// Echo of our own message (messageId 1) must be ignored: no turn at all.
 	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(webhookBody("message.sent", 9, 1, 0, "You said: hi"))))
+		strings.NewReader(string(webhookBody("message.sent", 10, 1, 0, "You said: hi"))))
 
 	// An operator-sent message must reach the harness as a record-only turn:
 	// the harness sees it, but nothing is delivered back to respond.io.
 	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(webhookBody("message.sent", 9, 555, 0, "operator reply"))))
+		strings.NewReader(string(webhookBody("message.sent", 11, 555, 0, "operator reply"))))
 
+	waitForDir(t, filepath.Join(cfg.dataDir, "11"))
+	if _, err := os.Stat(filepath.Join(cfg.dataDir, "10")); !os.IsNotExist(err) {
+		t.Errorf("echoed message spawned a harness turn")
+	}
 	time.Sleep(500 * time.Millisecond)
 	fake.mu.Lock()
 	defer fake.mu.Unlock()

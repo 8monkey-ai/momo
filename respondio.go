@@ -76,12 +76,23 @@ func newRespondClient(baseURL, token string) *respondClient {
 	}
 }
 
-// sendText posts a text message to a contact and records the returned
-// messageId so the outgoing webhook can recognize our own messages.
+// sendText posts a text message to a contact.
 func (c *respondClient) sendText(contactID int64, text string) error {
-	body, _ := json.Marshal(map[string]any{
-		"message": map[string]string{"type": "text", "text": text},
+	return c.send(contactID, map[string]any{"type": "text", "text": text})
+}
+
+// sendAttachment posts a media attachment (image, audio, video, file) by URL.
+func (c *respondClient) sendAttachment(contactID int64, attType, url string) error {
+	return c.send(contactID, map[string]any{
+		"type":       "attachment",
+		"attachment": map[string]string{"type": attType, "url": url},
 	})
+}
+
+// send posts a message to a contact and records the returned messageId so the
+// outgoing webhook can recognize our own messages.
+func (c *respondClient) send(contactID int64, message map[string]any) error {
+	body, _ := json.Marshal(map[string]any{"message": message})
 	url := fmt.Sprintf("%s/contact/id:%d/message", c.baseURL, contactID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
