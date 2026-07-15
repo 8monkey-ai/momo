@@ -88,7 +88,6 @@ var testAgentBin = sync.OnceValue(func() string {
 type fakeRespond struct {
 	mu       sync.Mutex
 	messages []string
-	nextID   int64
 }
 
 func (f *fakeRespond) handler() http.Handler {
@@ -103,10 +102,8 @@ func (f *fakeRespond) handler() http.Handler {
 		}
 		f.mu.Lock()
 		f.messages = append(f.messages, msg)
-		f.nextID++
-		id := f.nextID
 		f.mu.Unlock()
-		json.NewEncoder(w).Encode(map[string]int64{"messageId": id})
+		json.NewEncoder(w).Encode(map[string]int64{"messageId": 1})
 	})
 }
 
@@ -304,8 +301,7 @@ func TestAssigneeGate(t *testing.T) {
 }
 
 // Outgoing messages in a conversation assigned to the AI user are our own
-// replies; they must be skipped even when the echo filter has no record of
-// them (e.g. after a server restart).
+// replies; they must be skipped to avoid echo loops.
 func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	fake, ts, cfg := setupServer(t, config{aiAssigneeID: 471663})
 
@@ -326,38 +322,5 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.messages) != 0 {
 		t.Errorf("record-only turn delivered messages: %q", fake.messages)
-	}
-}
-
-func TestOutgoingEchoFiltered(t *testing.T) {
-	fake, ts, cfg := setupServer(t, config{})
-
-	// Trigger a normal turn so the server records the messageIds it sent.
-	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(incomingText(9, "hi"))))
-	fake.wait(t, 2)
-
-	// The filter matches on messageId alone, so the echo and operator events
-	// below use fresh contact ids: whether a record-only turn ran is then
-	// observable as that contact's dir appearing.
-
-	// Echo of our own message (messageId 1) must be ignored: no turn at all.
-	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(webhookBody("message.sent", 10, 1, 0, "You said: hi"))))
-
-	// An operator-sent message must reach the harness as a record-only turn:
-	// the harness sees it, but nothing is delivered back to respond.io.
-	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(webhookBody("message.sent", 11, 555, 0, "operator reply"))))
-
-	waitForDir(t, filepath.Join(cfg.dataDir, "11"))
-	if _, err := os.Stat(filepath.Join(cfg.dataDir, "10")); !os.IsNotExist(err) {
-		t.Errorf("echoed message spawned a harness turn")
-	}
-	time.Sleep(500 * time.Millisecond)
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if len(fake.messages) != 2 {
-		t.Errorf("expected no extra deliveries, got %q", fake.messages)
 	}
 }

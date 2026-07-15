@@ -67,9 +67,10 @@ agent config (local checkout: `~/Projects/hebo-gato`). Things that will bite you
 
 ## Known open issues
 
-- The echo filter (sent-message IDs) is in-memory: after a server restart, the
-  first `message.sent` webhook for a reply the previous instance sent gets
-  recorded as an operator note (harmless but wrong).
+- Echo suppression for `message.sent` relies solely on the AI-assignee check:
+  if `RESPOND_AI_ASSIGNEE_ID` is unset, or the agent replies in a conversation
+  not assigned to the AI user, its own reply gets recorded back into the
+  context as an operator note.
 - Ordering of multiple messages queued behind an active turn relies on mutex
   wake-up order, which is not FIFO.
 - No idle reaper: harness subprocesses live forever once spawned.

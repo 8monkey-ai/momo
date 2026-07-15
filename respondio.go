@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -32,8 +31,7 @@ type assignee struct {
 }
 
 type eventMessage struct {
-	MessageID int64          `json:"messageId"`
-	Message   messageContent `json:"message"`
+	Message messageContent `json:"message"`
 }
 
 type messageContent struct {
@@ -62,9 +60,6 @@ type respondClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
-
-	mu   sync.Mutex
-	sent map[int64]time.Time // messageIds we produced, for the outgoing-webhook echo filter
 }
 
 func newRespondClient(baseURL, token string) *respondClient {
@@ -72,16 +67,13 @@ func newRespondClient(baseURL, token string) *respondClient {
 		baseURL: baseURL,
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
-		sent:    make(map[int64]time.Time),
 	}
 }
 
-// sendText posts a text message to a contact.
 func (c *respondClient) sendText(contactID int64, text string) error {
 	return c.send(contactID, map[string]any{"type": "text", "text": text})
 }
 
-// sendAttachment posts a media attachment (image, audio, video, file) by URL.
 func (c *respondClient) sendAttachment(contactID int64, attType, url string) error {
 	return c.send(contactID, map[string]any{
 		"type":       "attachment",
@@ -89,8 +81,6 @@ func (c *respondClient) sendAttachment(contactID int64, attType, url string) err
 	})
 }
 
-// send posts a message to a contact and records the returned messageId so the
-// outgoing webhook can recognize our own messages.
 func (c *respondClient) send(contactID int64, message map[string]any) error {
 	body, _ := json.Marshal(map[string]any{"message": message})
 	url := fmt.Sprintf("%s/contact/id:%d/message", c.baseURL, contactID)
@@ -110,35 +100,9 @@ func (c *respondClient) send(contactID int64, message map[string]any) error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("respond.io send failed: %s: %s", resp.Status, respBody)
 	}
-	var out struct {
-		MessageID int64 `json:"messageId"`
-	}
-	if err := json.Unmarshal(respBody, &out); err == nil && out.MessageID != 0 {
-		c.rememberSent(out.MessageID)
-	}
 	return nil
 }
 
-func (c *respondClient) rememberSent(messageID int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now()
-	for id, t := range c.sent {
-		if now.Sub(t) > time.Hour {
-			delete(c.sent, id)
-		}
-	}
-	c.sent[messageID] = now
-}
-
-func (c *respondClient) wasSentByUs(messageID int64) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, ok := c.sent[messageID]
-	return ok
-}
-
-// download fetches an attachment URL into memory.
 func (c *respondClient) download(url string) ([]byte, error) {
 	resp, err := c.http.Get(url)
 	if err != nil {

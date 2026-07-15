@@ -48,10 +48,9 @@ Each registered webhook has its own signing key; set them via
 - **New Outgoing Message** (`message.sent`) — optional. Messages sent by others
   (human operators, workflows) are recorded into the chat history by prompting with
   `/add-assistant-message` followed by the message text; nothing is delivered back.
-  Messages sent by agent-server itself are recognized by messageId and skipped,
-  preventing echo loops. If `RESPOND_AI_ASSIGNEE_ID` is set, outgoing messages in
-  conversations assigned to that user are skipped outright — they can only be the
-  agent's own replies.
+  If `RESPOND_AI_ASSIGNEE_ID` is set, outgoing messages in conversations assigned to
+  that user are skipped — they can only be the agent's own replies, and recording
+  them would echo the agent's replies back into its context.
 
 ## Configuration
 

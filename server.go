@@ -115,11 +115,10 @@ func (s *server) handleIncoming(ev webhookEvent) {
 }
 
 // handleOutgoing records messages sent to the contact by others (human
-// operators, workflows) into the harness context. Our own replies are skipped
-// to avoid echo loops; the AI-assignee check covers our sends even when the
-// in-memory echo filter lost track (e.g. across server restarts).
+// operators, workflows) into the harness context. Conversations assigned to
+// the AI are skipped to avoid echoing our own replies back into the context.
 func (s *server) handleOutgoing(ev webhookEvent) {
-	if s.assignedToAI(ev.Contact) || s.respond.wasSentByUs(ev.Message.MessageID) {
+	if s.assignedToAI(ev.Contact) {
 		return
 	}
 	s.record(ev, recordOutgoingCommand)
