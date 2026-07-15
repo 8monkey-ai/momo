@@ -15,11 +15,11 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// Record-only slash commands from gato's @8monkey/pi-context-history package:
-// they append a message to the chat history without triggering a generation.
+// Slash commands from gato's @8monkey/pi-context-history package: they append
+// to the chat history without triggering a generation.
 const (
-	incomingCommand = "/add-user-message"
-	outgoingCommand = "/add-assistant-message"
+	recordIncomingCommand = "/add-user-message"
+	recordOutgoingCommand = "/add-assistant-message"
 )
 
 type server struct {
@@ -60,7 +60,6 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Each registered webhook has its own signing key.
 	var key string
 	var handle func(webhookEvent)
 	switch ev.EventType {
@@ -83,12 +82,11 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	go handle(ev)
 }
 
+// handleIncoming prompts the harness for a reply, unless a human assignee
+// owns the conversation — then the message is only recorded into the context.
 func (s *server) handleIncoming(ev webhookEvent) {
-	// Only reply when the conversation is assigned to the AI user (or to no
-	// one); a human assignee owns the conversation, so just record the message
-	// into the harness context.
-	if a := ev.Contact.Assignee; s.cfg.aiAssigneeID != 0 && a != nil && a.ID != s.cfg.aiAssigneeID {
-		s.record(ev, incomingCommand)
+	if s.assignedToHuman(ev.Contact) {
+		s.record(ev, recordIncomingCommand)
 		return
 	}
 	blocks, err := s.contentBlocks(ev)
@@ -109,24 +107,26 @@ func (s *server) handleIncoming(ev webhookEvent) {
 }
 
 // handleOutgoing records messages sent to the contact by others (human
-// operators, workflows) into the harness context via the configured slash
-// command. Messages this server sent are skipped to avoid echo loops.
+// operators, workflows) into the harness context. Our own replies are skipped
+// to avoid echo loops; the AI-assignee check covers our sends even when the
+// in-memory echo filter lost track (e.g. across server restarts).
 func (s *server) handleOutgoing(ev webhookEvent) {
-	// A conversation assigned to the AI user only produces outgoing messages
-	// through us; skip them even when the in-memory echo filter lost track
-	// (e.g. across server restarts).
-	if a := ev.Contact.Assignee; s.cfg.aiAssigneeID != 0 && a != nil && a.ID == s.cfg.aiAssigneeID {
+	if s.assignedToAI(ev.Contact) || s.respond.wasSentByUs(ev.Message.MessageID) {
 		return
 	}
-	if s.respond.wasSentByUs(ev.Message.MessageID) {
-		return
-	}
-	s.record(ev, outgoingCommand)
+	s.record(ev, recordOutgoingCommand)
 }
 
-// record appends a text message to the harness context via a slash command
-// without generating a reply (record-only turn). Non-text messages are
-// dropped: they can't ride a slash command.
+func (s *server) assignedToHuman(c contact) bool {
+	return s.cfg.aiAssigneeID != 0 && c.Assignee != nil && c.Assignee.ID != s.cfg.aiAssigneeID
+}
+
+func (s *server) assignedToAI(c contact) bool {
+	return s.cfg.aiAssigneeID != 0 && c.Assignee != nil && c.Assignee.ID == s.cfg.aiAssigneeID
+}
+
+// record appends the message to the harness context without generating a
+// reply. Non-text messages are dropped: they can't ride a slash command.
 func (s *server) record(ev webhookEvent, command string) {
 	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
 		return
@@ -140,8 +140,7 @@ func (s *server) record(ev webhookEvent, command string) {
 	}
 }
 
-// contentBlocks translates a respond.io message into ACP content blocks.
-// Returns nil for unsupported types.
+// contentBlocks returns nil for unsupported message types.
 func (s *server) contentBlocks(ev webhookEvent) ([]acp.ContentBlock, error) {
 	m := ev.Message.Message
 	switch m.Type {
