@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +47,15 @@ type attachment struct {
 	URL      string `json:"url"`
 	FileName string `json:"fileName"`
 	Mime     string `json:"mime"`
+}
+
+// validSignature checks a webhook's X-Webhook-Signature header: base64 of
+// HMAC-SHA256 over the raw body with the webhook's signing key.
+func validSignature(body []byte, signature, key string) bool {
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write(body)
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(signature), []byte(expected))
 }
 
 type respondClient struct {

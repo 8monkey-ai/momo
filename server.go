@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -62,14 +60,14 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Each registered webhook has its own signing key: HMAC-SHA256 over the
-	// raw body, base64, in X-Webhook-Signature.
+	// Each registered webhook has its own signing key.
 	var key string
+	var handle func(webhookEvent)
 	switch ev.EventType {
 	case "message.received":
-		key = s.cfg.incomingSigningKey
+		key, handle = s.cfg.incomingSigningKey, s.handleIncoming
 	case "message.sent":
-		key = s.cfg.outgoingSigningKey
+		key, handle = s.cfg.outgoingSigningKey, s.handleOutgoing
 	}
 	if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 		log.Printf("rejected %q webhook: invalid signature", ev.EventType)
@@ -78,21 +76,11 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 
-	switch ev.EventType {
-	case "message.received":
-		go s.handleIncoming(ev)
-	case "message.sent":
-		go s.handleOutgoing(ev)
-	default:
+	if handle == nil {
 		log.Printf("ignoring event %q", ev.EventType)
+		return
 	}
-}
-
-func validSignature(body []byte, signature, key string) bool {
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write(body)
-	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(signature), []byte(expected))
+	go handle(ev)
 }
 
 func (s *server) handleIncoming(ev webhookEvent) {
@@ -120,22 +108,6 @@ func (s *server) handleIncoming(ev webhookEvent) {
 	}
 }
 
-// record appends a text message to the harness context via a slash command
-// without generating a reply (record-only turn). Non-text messages are
-// dropped: they can't ride a slash command.
-func (s *server) record(ev webhookEvent, command string) {
-	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
-		return
-	}
-	// Single line: ACP adapters split the slash command from its args at the
-	// first space, so the message must follow on the same line.
-	prompt := command + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
-	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
-	if err != nil {
-		log.Printf("contact %d: record %s: %v", ev.Contact.ID, command, err)
-	}
-}
-
 // handleOutgoing records messages sent to the contact by others (human
 // operators, workflows) into the harness context via the configured slash
 // command. Messages this server sent are skipped to avoid echo loops.
@@ -150,6 +122,22 @@ func (s *server) handleOutgoing(ev webhookEvent) {
 		return
 	}
 	s.record(ev, outgoingCommand)
+}
+
+// record appends a text message to the harness context via a slash command
+// without generating a reply (record-only turn). Non-text messages are
+// dropped: they can't ride a slash command.
+func (s *server) record(ev webhookEvent, command string) {
+	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
+		return
+	}
+	// Single line: ACP adapters split the slash command from its args at the
+	// first space, so the message must follow on the same line.
+	prompt := command + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
+	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
+	if err != nil {
+		log.Printf("contact %d: record %s: %v", ev.Contact.ID, command, err)
+	}
 }
 
 // contentBlocks translates a respond.io message into ACP content blocks.
