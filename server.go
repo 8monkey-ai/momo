@@ -114,11 +114,11 @@ func (s *server) handleIncoming(ev webhookEvent) {
 	}
 }
 
-// handleOutgoing records messages sent to the contact by others (human
-// operators, workflows) into the harness context. Conversations assigned to
-// the AI are skipped to avoid echoing our own replies back into the context.
+// handleOutgoing records human operator replies into the harness context.
+// Unless a human owns the conversation, outgoing messages are the AI's own
+// replies and recording them would echo them back into its context.
 func (s *server) handleOutgoing(ev webhookEvent) {
-	if s.assignedToAI(ev.Contact) {
+	if !s.assignedToHuman(ev.Contact) {
 		return
 	}
 	s.record(ev, recordOutgoingCommand)
@@ -126,10 +126,6 @@ func (s *server) handleOutgoing(ev webhookEvent) {
 
 func (s *server) assignedToHuman(c contact) bool {
 	return s.cfg.aiAssigneeID != 0 && c.Assignee != nil && c.Assignee.ID != s.cfg.aiAssigneeID
-}
-
-func (s *server) assignedToAI(c contact) bool {
-	return s.cfg.aiAssigneeID != 0 && c.Assignee != nil && c.Assignee.ID == s.cfg.aiAssigneeID
 }
 
 // record appends the message to the harness context without generating a

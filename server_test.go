@@ -300,17 +300,21 @@ func TestAssigneeGate(t *testing.T) {
 	}
 }
 
-// Outgoing messages in a conversation assigned to the AI user are our own
-// replies; they must be skipped to avoid echo loops.
-func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
+// Outgoing messages are only recorded when a human owns the conversation;
+// everywhere else they are the agent's own replies and must be skipped to
+// avoid echo loops.
+func TestOutgoingRecordedOnlyWhenAssignedToHuman(t *testing.T) {
 	fake, ts, cfg := setupServer(t, config{aiAssigneeID: 471663})
 
-	// Assigned to the AI: no harness turn at all — no contact dir appears.
+	// Assigned to the AI or unassigned: no harness turn at all — no contact
+	// dir appears.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(webhookBody("message.sent", 13, 777, 471663, "our own reply"))))
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 13, 779, 0, "unassigned reply"))))
 	time.Sleep(500 * time.Millisecond)
 	if _, err := os.Stat(filepath.Join(cfg.dataDir, "13")); !os.IsNotExist(err) {
-		t.Errorf("AI-assigned outgoing message spawned a harness turn")
+		t.Errorf("AI-assigned or unassigned outgoing message spawned a harness turn")
 	}
 
 	// Assigned to a human: recorded as a record-only turn (harness spawns,
@@ -322,5 +326,18 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.messages) != 0 {
 		t.Errorf("record-only turn delivered messages: %q", fake.messages)
+	}
+}
+
+// Without RESPOND_AI_ASSIGNEE_ID the agent handles every conversation, so
+// every outgoing message is its own reply and none may be recorded.
+func TestOutgoingSkippedWithoutAssigneeGate(t *testing.T) {
+	_, ts, cfg := setupServer(t, config{})
+
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(webhookBody("message.sent", 14, 780, 999, "reply"))))
+	time.Sleep(500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(cfg.dataDir, "14")); !os.IsNotExist(err) {
+		t.Errorf("outgoing message without assignee gate spawned a harness turn")
 	}
 }

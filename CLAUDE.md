@@ -35,6 +35,5 @@ The deployed harness is `pi-acp` (npm, global) driving `pi` with the gato sales 
 
 ## Known open issues
 
-- Echo suppression for `message.sent` relies solely on the AI-assignee check: if `RESPOND_AI_ASSIGNEE_ID` is unset, or the agent replies in a conversation not assigned to the AI user, its own reply gets recorded back into the context as an operator note.
 - Ordering of multiple messages queued behind an active turn relies on mutex wake-up order, which is not FIFO.
 - No idle reaper: harness subprocesses live forever once spawned.

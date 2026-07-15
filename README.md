@@ -1,9 +1,6 @@
 # agent-server
 
-A bridge between [respond.io](https://respond.io) and [pi-acp](https://github.com/svkozak/pi-acp),
-the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) harness for pi. It
-receives respond.io webhooks, drives one harness subprocess per contact over ACP, and
-sends the agent's replies back through the respond.io API — paced like human typing.
+A bridge between [respond.io](https://respond.io) and [pi-acp](https://github.com/svkozak/pi-acp), the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) harness for pi. It receives respond.io webhooks, drives one harness subprocess per contact over ACP, and sends the agent's replies back through the respond.io API — paced like human typing.
 
 ```
 respond.io ──webhook POST──▶  agent-server  ──JSON-RPC/stdio──▶ pi-acp (per contact)
@@ -12,45 +9,20 @@ respond.io ◀──REST API ─────  (this binary) ◀── session/up
 
 ## How it works
 
-- **One harness subprocess and one ACP session per contact**, spawned on first message.
-  The respond.io contact ID is the routing key; the harness issues the session ID.
-- **Per-contact working directory** (`DATA_DIR/<contactId>`), passed as the session
-  `cwd`. This is how the harness identifies the user and where it persists their chat
-  history — returning users continue their previous conversation. With
-  `CONTACT_TEMPLATE` set, each contact dir is seeded with symlinks to a project
-  template so the harness picks up its config (system prompt, packages, skills).
-- **Session resume**: the contact→session mapping is persisted in
-  `DATA_DIR/sessions.json`; if the harness supports `session/load`, conversations
-  survive agent-server restarts.
-- **Steering**: a message arriving while a turn is streaming cancels the active turn
-  (`session/cancel`) and prompts with the new message.
-- **Human-paced delivery**: streamed output is split on paragraph boundaries (`\n\n`)
-  and each paragraph is sent as a separate respond.io message, delayed proportionally
-  to its length.
-- **Attachments**: images and audio (voice messages) are downloaded and sent to the
-  agent as inline content blocks; other files are saved into the contact's working
-  directory and referenced with a resource link.
-- **Permissions**: tool-call permission requests from the harness are auto-approved
-  (the harness uses its own fs/terminal tools inside the contact's cwd).
+- **One harness subprocess and one ACP session per contact**, spawned on first message. The respond.io contact ID is the routing key; the harness issues the session ID.
+- **Per-contact working directory** (`DATA_DIR/<contactId>`), passed as the session `cwd`. This is how the harness identifies the user and where it persists their chat history — returning users continue their previous conversation. With `CONTACT_TEMPLATE` set, each contact dir is seeded with symlinks to a project template so the harness picks up its config (system prompt, packages, skills).
+- **Session resume**: the contact→session mapping is persisted in `DATA_DIR/sessions.json`; if the harness supports `session/load`, conversations survive agent-server restarts.
+- **Steering**: a message arriving while a turn is streaming cancels the active turn (`session/cancel`) and prompts with the new message.
+- **Human-paced delivery**: streamed output is split on paragraph boundaries (`\n\n`) and each paragraph is sent as a separate respond.io message, delayed proportionally to its length.
+- **Attachments**: images and audio (voice messages) are downloaded and sent to the agent as inline content blocks; other files are saved into the contact's working directory and referenced with a resource link.
+- **Permissions**: tool-call permission requests from the harness are auto-approved (the harness uses its own fs/terminal tools inside the contact's cwd).
 
 ## Webhooks
 
-Register these in respond.io (Settings → Integrations → Webhook), pointing both at
-the same URL, `https://<host>/webhook` (the server dispatches on `event_type`).
-Each registered webhook has its own signing key; set them via
-`RESPOND_INCOMING_SIGNING_KEY` / `RESPOND_OUTGOING_SIGNING_KEY` and the server verifies the
-`X-Webhook-Signature` header (base64 HMAC-SHA256 of the raw body) per event:
+Register these in respond.io (Settings → Integrations → Webhook), pointing both at the same URL, `https://<host>/webhook` (the server dispatches on `event_type`). Each registered webhook has its own signing key; set them via `RESPOND_INCOMING_SIGNING_KEY` / `RESPOND_OUTGOING_SIGNING_KEY` and the server verifies the `X-Webhook-Signature` header (base64 HMAC-SHA256 of the raw body) per event:
 
-- **New Incoming Message** (`message.received`) — required. Each text message becomes
-  a prompt turn. If `RESPOND_AI_ASSIGNEE_ID` is set, only conversations assigned to that
-  respond.io user (or unassigned) get a reply; messages in conversations assigned to
-  anyone else are recorded into the chat history with `/add-user-message` instead.
-- **New Outgoing Message** (`message.sent`) — optional. Messages sent by others
-  (human operators, workflows) are recorded into the chat history by prompting with
-  `/add-assistant-message` followed by the message text; nothing is delivered back.
-  If `RESPOND_AI_ASSIGNEE_ID` is set, outgoing messages in conversations assigned to
-  that user are skipped — they can only be the agent's own replies, and recording
-  them would echo the agent's replies back into its context.
+- **New Incoming Message** (`message.received`) — required. Each text message becomes a prompt turn. If `RESPOND_AI_ASSIGNEE_ID` is set, only conversations assigned to that respond.io user (or unassigned) get a reply; messages in conversations assigned to anyone else are recorded into the chat history with `/add-user-message` instead.
+- **New Outgoing Message** (`message.sent`) — optional. Messages sent by human operators are recorded into the chat history by prompting with `/add-assistant-message` followed by the message text; nothing is delivered back. Only conversations assigned to a human (an assignee other than `RESPOND_AI_ASSIGNEE_ID`) are recorded — everywhere else the agent is the one replying, so the outgoing message is its own reply and recording it would echo it back into its context.
 
 ## Configuration
 
@@ -80,5 +52,4 @@ RESPOND_API_TOKEN=... go run .
 go test ./...
 ```
 
-The end-to-end test builds a stub ACP agent (`./testagent`) and exercises the full
-webhook → prompt → streamed reply → chunked delivery flow against a fake respond.io API.
+The end-to-end test builds a stub ACP agent (`./testagent`) and exercises the full webhook → prompt → streamed reply → chunked delivery flow against a fake respond.io API.
