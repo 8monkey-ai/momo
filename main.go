@@ -17,8 +17,6 @@ type config struct {
 	dataDir         string
 	contactTemplate string
 	typingPerChar   time.Duration
-	outgoingCommand string
-	incomingCommand string
 	aiAssigneeID    int64
 
 	incomingSigningKey string
@@ -33,8 +31,6 @@ func loadConfig() (config, error) {
 		agentCmd:        "pi-acp",
 		dataDir:         envOr("DATA_DIR", "./data"),
 		contactTemplate: os.Getenv("CONTACT_TEMPLATE"),
-		outgoingCommand: os.Getenv("OUTGOING_COMMAND"),
-		incomingCommand: os.Getenv("INCOMING_COMMAND"),
 
 		incomingSigningKey: os.Getenv("INCOMING_SIGNING_KEY"),
 		outgoingSigningKey: os.Getenv("OUTGOING_SIGNING_KEY"),

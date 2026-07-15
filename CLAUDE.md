@@ -33,8 +33,9 @@ agent config (local checkout: `~/Projects/hebo-gato`). Things that will bite you
 - **Harness shutdown must SIGKILL the whole process group** (already implemented):
   a gracefully-quitting pi child runs gato's pi-session-gzip hook, which compresses
   the session file that `session/load` needs — silently emptying restored history.
-- **pi-acp splits a slash command from its args at the first space**, so outgoing
-  operator messages are flattened to one line before prepending `OUTGOING_COMMAND`.
+- **pi-acp splits a slash command from its args at the first space**, so recorded
+  messages are flattened to one line before prepending the slash command
+  (`/add-user-message` / `/add-assistant-message`, hardcoded in server.go).
 - pi model config: `~/.pi/agent/models.json` defines the `hebo` provider
   (gateway.hebo.ai) resolving `$HEBO_API_KEY` from the environment the server
   inherits. pi-acp session map: `~/.pi/pi-acp/session-map.json`. pi session files:

@@ -17,6 +17,13 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
+// Record-only slash commands from gato's @8monkey/pi-context-history package:
+// they append a message to the chat history without triggering a generation.
+const (
+	incomingCommand = "/add-user-message"
+	outgoingCommand = "/add-assistant-message"
+)
+
 type server struct {
 	cfg     config
 	mgr     *manager
@@ -75,9 +82,7 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	case "message.received":
 		go s.handleIncoming(ev)
 	case "message.sent":
-		if s.cfg.outgoingCommand != "" {
-			go s.handleOutgoing(ev)
-		}
+		go s.handleOutgoing(ev)
 	default:
 		log.Printf("ignoring event %q", ev.EventType)
 	}
@@ -95,9 +100,7 @@ func (s *server) handleIncoming(ev webhookEvent) {
 	// one); a human assignee owns the conversation, so just record the message
 	// into the harness context.
 	if a := ev.Contact.Assignee; s.cfg.aiAssigneeID != 0 && a != nil && a.ID != s.cfg.aiAssigneeID {
-		if s.cfg.incomingCommand != "" {
-			s.record(ev, s.cfg.incomingCommand)
-		}
+		s.record(ev, incomingCommand)
 		return
 	}
 	blocks, err := s.contentBlocks(ev)
@@ -146,7 +149,7 @@ func (s *server) handleOutgoing(ev webhookEvent) {
 	if s.respond.wasSentByUs(ev.Message.MessageID) {
 		return
 	}
-	s.record(ev, s.cfg.outgoingCommand)
+	s.record(ev, outgoingCommand)
 }
 
 // contentBlocks translates a respond.io message into ACP content blocks.

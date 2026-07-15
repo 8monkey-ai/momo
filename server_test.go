@@ -237,7 +237,6 @@ func TestAssigneeGate(t *testing.T) {
 		respondBaseURL:  respondSrv.URL,
 		agentCmd:        bin,
 		dataDir:         t.TempDir(),
-		incomingCommand: "/add-user-message",
 		aiAssigneeID:    471663,
 	}
 	srv := newServer(cfg)
@@ -286,7 +285,6 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 		respondBaseURL:  respondSrv.URL,
 		agentCmd:        bin,
 		dataDir:         t.TempDir(),
-		outgoingCommand: "/add-assistant-message",
 		aiAssigneeID:    471663,
 	}
 	srv := newServer(cfg)
@@ -333,7 +331,6 @@ func TestOutgoingEchoFiltered(t *testing.T) {
 		respondBaseURL:  respondSrv.URL,
 		agentCmd:        bin,
 		dataDir:         t.TempDir(),
-		outgoingCommand: "/operator-note",
 	}
 	srv := newServer(cfg)
 	ts := httptest.NewServer(srv.routes())
