@@ -233,11 +233,11 @@ func TestAssigneeGate(t *testing.T) {
 	defer respondSrv.Close()
 
 	cfg := config{
-		respondToken:    "test-token",
-		respondBaseURL:  respondSrv.URL,
-		agentCmd:        bin,
-		dataDir:         t.TempDir(),
-		aiAssigneeID:    471663,
+		respondToken:   "test-token",
+		respondBaseURL: respondSrv.URL,
+		agentCmd:       bin,
+		dataDir:        t.TempDir(),
+		aiAssigneeID:   471663,
 	}
 	srv := newServer(cfg)
 	ts := httptest.NewServer(srv.routes())
@@ -281,11 +281,11 @@ func TestOutgoingSkippedWhenAssignedToAI(t *testing.T) {
 	defer respondSrv.Close()
 
 	cfg := config{
-		respondToken:    "test-token",
-		respondBaseURL:  respondSrv.URL,
-		agentCmd:        bin,
-		dataDir:         t.TempDir(),
-		aiAssigneeID:    471663,
+		respondToken:   "test-token",
+		respondBaseURL: respondSrv.URL,
+		agentCmd:       bin,
+		dataDir:        t.TempDir(),
+		aiAssigneeID:   471663,
 	}
 	srv := newServer(cfg)
 	ts := httptest.NewServer(srv.routes())
@@ -327,10 +327,10 @@ func TestOutgoingEchoFiltered(t *testing.T) {
 	defer respondSrv.Close()
 
 	cfg := config{
-		respondToken:    "test-token",
-		respondBaseURL:  respondSrv.URL,
-		agentCmd:        bin,
-		dataDir:         t.TempDir(),
+		respondToken:   "test-token",
+		respondBaseURL: respondSrv.URL,
+		agentCmd:       bin,
+		dataDir:        t.TempDir(),
 	}
 	srv := newServer(cfg)
 	ts := httptest.NewServer(srv.routes())

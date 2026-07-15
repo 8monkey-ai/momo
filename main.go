@@ -64,9 +64,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.MkdirAll(cfg.dataDir, 0o755); err != nil {
-		log.Fatal(err)
-	}
 	srv := newServer(cfg)
 	log.Printf("agent-server listening on :%s", cfg.port)
 	log.Fatal(http.ListenAndServe(":"+cfg.port, srv.routes()))
