@@ -34,7 +34,7 @@ func newServer(cfg config) *server {
 	return &server{
 		cfg:     cfg,
 		mgr:     newManager(cfg),
-		respond: newRespondClient(cfg.respondBaseURL, cfg.respondToken),
+		respond: newRespondClient(cfg.apiBaseURL, cfg.apiToken),
 	}
 }
 

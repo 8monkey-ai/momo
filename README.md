@@ -38,18 +38,18 @@ respond.io ◀──REST API ─────  (this binary) ◀── session/up
 Register these in respond.io (Settings → Integrations → Webhook), pointing both at
 the same URL, `https://<host>/webhook` (the server dispatches on `event_type`).
 Each registered webhook has its own signing key; set them via
-`INCOMING_SIGNING_KEY` / `OUTGOING_SIGNING_KEY` and the server verifies the
+`RESPOND_INCOMING_SIGNING_KEY` / `RESPOND_OUTGOING_SIGNING_KEY` and the server verifies the
 `X-Webhook-Signature` header (base64 HMAC-SHA256 of the raw body) per event:
 
 - **New Incoming Message** (`message.received`) — required. Each text message becomes
-  a prompt turn. If `AI_ASSIGNEE_ID` is set, only conversations assigned to that
+  a prompt turn. If `RESPOND_AI_ASSIGNEE_ID` is set, only conversations assigned to that
   respond.io user (or unassigned) get a reply; messages in conversations assigned to
   anyone else are recorded into the chat history with `/add-user-message` instead.
 - **New Outgoing Message** (`message.sent`) — optional. Messages sent by others
   (human operators, workflows) are recorded into the chat history by prompting with
   `/add-assistant-message` followed by the message text; nothing is delivered back.
   Messages sent by agent-server itself are recognized by messageId and skipped,
-  preventing echo loops. If `AI_ASSIGNEE_ID` is set, outgoing messages in
+  preventing echo loops. If `RESPOND_AI_ASSIGNEE_ID` is set, outgoing messages in
   conversations assigned to that user are skipped outright — they can only be the
   agent's own replies.
 
@@ -58,13 +58,13 @@ Each registered webhook has its own signing key; set them via
 | Env var | Default | Description |
 | --- | --- | --- |
 | `RESPOND_API_TOKEN` | — (required) | respond.io API bearer token |
-| `INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
-| `OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
+| `RESPOND_INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
+| `RESPOND_OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
 | `PORT` | `8080` | HTTP listen port |
 | `DATA_DIR` | `./data` | Per-contact working dirs and session store |
 | `CONTACT_TEMPLATE` | — (off) | Directory whose entries are symlinked into each contact's cwd (e.g. a [gato](https://github.com/8monkey-ai/gato) checkout, so the harness finds its `.pi/` project config) |
 | `TYPING_DELAY_MS_PER_CHAR` | `30` | Typing simulation; delay = chars × this (capped at 10s) |
-| `AI_ASSIGNEE_ID` | — (off) | respond.io user id the AI replies for; conversations assigned to anyone else are record-only |
+| `RESPOND_AI_ASSIGNEE_ID` | — (off) | respond.io user id the AI replies for; conversations assigned to anyone else are record-only |
 | `RESPOND_API_URL` | `https://api.respond.io/v2` | Override for testing |
 
 ## Run
