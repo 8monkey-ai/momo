@@ -22,6 +22,7 @@ type userSession struct {
 
 	mu          sync.Mutex // serializes prompt turns
 	cmd         *exec.Cmd
+	waitOnce    sync.Once // cmd.Wait must run exactly once
 	conn        *acp.ClientSideConnection
 	sessionID   acp.SessionId
 	currentTurn *turn      // non-nil while a prompt turn is streaming
@@ -251,7 +252,7 @@ func seedContactDir(cwd, template string) error {
 func (m *manager) watch(contactID int64, s *userSession) {
 	go func() {
 		<-s.conn.Done()
-		s.cmd.Wait()
+		s.wait()
 		m.mu.Lock()
 		if m.users[contactID] == s {
 			delete(m.users, contactID)
@@ -265,26 +266,23 @@ func (s *userSession) shutdown() {
 	if s.cmd.Process != nil {
 		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 	}
-	s.cmd.Wait()
+	s.wait()
 }
 
-// recordTurnTimeout bounds record-only turns (outgoing slash commands): pi
-// handles extension commands without starting an agent loop, so pi-acp never
-// resolves the prompt (pi-acp bug). The command's effect is persisted to the
-// session file almost immediately; on timeout we kill the harness so the next
-// message respawns it with session/load — the rebuild the command needs anyway.
-const recordTurnTimeout = 15 * time.Second
+func (s *userSession) wait() {
+	s.waitOnce.Do(func() { s.cmd.Wait() })
+}
 
-// promptTurnTimeout bounds how long we wait on the harness to resolve a
-// prompt turn before giving up on the reply.
+// promptTurnTimeout bounds how long we wait on the harness to resolve any
+// turn before giving up on it.
 const promptTurnTimeout = 30 * time.Minute
 
 var errHarnessGone = errors.New("harness died mid-prompt")
 
 // prompt runs one turn. If a turn is already streaming, it steers: cancels the
 // active turn, then queues the new prompt (prompt turns are serialized by mu).
-// A prompt that was queued behind a harness recycle (record-only turn timeout)
-// finds its session dead; retry once with a freshly spawned harness.
+// A prompt that was queued behind a harness recycle (record-only turn) finds
+// its session dead; retry once with a freshly spawned harness.
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
 	err := m.promptOnce(ctx, contactID, blocks, deliver)
 	if errors.Is(err, errHarnessGone) {
@@ -300,11 +298,7 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		return err
 	}
 
-	turnTimeout := promptTurnTimeout
-	if deliver == nil {
-		turnTimeout = recordTurnTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, turnTimeout)
+	ctx, cancel := context.WithTimeout(ctx, promptTurnTimeout)
 	defer cancel()
 
 	s.turnMu.Lock()
@@ -320,6 +314,13 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 	defer s.mu.Unlock()
 
 	t := newTurn(deliver, m.cfg.typingPerWord)
+	if deliver == nil {
+		// The record command acks with a chunk once the message is persisted;
+		// the prompt itself never resolves (pi runs extension commands without
+		// an agent loop, so pi-acp never sees agent_end — upstream bug). End
+		// the turn at the ack.
+		t.onFirstChunk = cancel
+	}
 	s.turnMu.Lock()
 	s.currentTurn = t
 	s.turnMu.Unlock()
@@ -335,11 +336,13 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 
 	if err != nil {
 		t.finish(false)
-		// A timed-out record-only turn wedges pi-acp's queue behind the
-		// never-resolving prompt; kill the harness so the next message
-		// respawns it (session/load) with the recorded message applied.
-		if deliver == nil && ctx.Err() == context.DeadlineExceeded {
-			log.Printf("contact %d: record-only turn done (harness never resolved it), recycling harness", contactID)
+		// A finished record-only turn recycles the harness: the recorded
+		// message only applies on a session rebuild, so kill the harness and
+		// let the next message respawn it with session/load.
+		if deliver == nil && ctx.Err() != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				log.Printf("contact %d: record-only turn got no ack, recycling harness anyway", contactID)
+			}
 			s.shutdown()
 			return nil
 		}
@@ -356,6 +359,9 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		return fmt.Errorf("prompt: %w", err)
 	}
 	t.finish(resp.StopReason != acp.StopReasonCancelled)
+	if deliver == nil {
+		s.shutdown()
+	}
 	return nil
 }
 

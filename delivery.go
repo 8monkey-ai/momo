@@ -14,6 +14,10 @@ type turn struct {
 	deliver func(string) error
 	perWord time.Duration
 
+	// onFirstChunk fires once, at the first chunk; record-only turns treat
+	// it as the command's ack.
+	onFirstChunk func()
+
 	mu     sync.Mutex
 	buf    strings.Builder
 	closed bool
@@ -46,6 +50,10 @@ func newTurn(deliver func(string) error, perWord time.Duration) *turn {
 func (t *turn) addChunk(text string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.onFirstChunk != nil {
+		t.onFirstChunk()
+		t.onFirstChunk = nil
+	}
 	if t.closed {
 		return
 	}
