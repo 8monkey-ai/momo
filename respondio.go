@@ -23,7 +23,9 @@ type webhookEvent struct {
 
 type contact struct {
 	ID       int64     `json:"id"`
-	Assignee *assignee `json:"assignee"` // nil when the conversation is unassigned
+	// Unassigned arrives as an object of nulls ({"id": null, ...}), so the
+	// value type folds every unassigned shape into ID == 0.
+	Assignee assignee `json:"assignee"`
 }
 
 type assignee struct {

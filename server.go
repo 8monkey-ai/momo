@@ -125,7 +125,7 @@ func (s *server) handleOutgoing(ev webhookEvent) {
 }
 
 func (s *server) assignedToHuman(c contact) bool {
-	return s.cfg.aiAssigneeID != 0 && c.Assignee != nil && c.Assignee.ID != s.cfg.aiAssigneeID
+	return s.cfg.aiAssigneeID != 0 && c.Assignee.ID != 0 && c.Assignee.ID != s.cfg.aiAssigneeID
 }
 
 // record appends the message to the harness context without generating a

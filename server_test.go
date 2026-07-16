@@ -291,9 +291,19 @@ func TestAssigneeGate(t *testing.T) {
 		t.Errorf("ai-assigned message = %q", msgs[0])
 	}
 
-	// Unassigned: also replied to.
-	http.Post(ts.URL+"/webhook", "application/json",
-		strings.NewReader(string(incomingText(11, "unassigned"))))
+	// Unassigned — an object of nulls on the wire: also replied to.
+	body, _ := json.Marshal(map[string]any{
+		"event_type": "message.received",
+		"contact": map[string]any{
+			"id":       11,
+			"assignee": map[string]any{"id": nil, "firstName": nil, "lastName": nil, "email": nil},
+		},
+		"message": map[string]any{
+			"messageId": 43,
+			"message":   map[string]any{"type": "text", "text": "unassigned"},
+		},
+	})
+	http.Post(ts.URL+"/webhook", "application/json", strings.NewReader(string(body)))
 	msgs = fake.wait(t, 4)
 	if msgs[2] != "You said: unassigned" {
 		t.Errorf("unassigned message = %q", msgs[2])
