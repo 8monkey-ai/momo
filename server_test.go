@@ -127,8 +127,7 @@ func (f *fakeRespond) wait(t *testing.T, n int) []string {
 }
 
 // setupServer starts a fake respond.io backend and the agent server wired to
-// it, filling in the config fields every test shares. Test-specific fields
-// (signing keys, aiAssigneeID) come in via cfg.
+// it; test-specific config fields come in via cfg.
 func setupServer(t *testing.T, cfg config) (*fakeRespond, *httptest.Server, config) {
 	t.Helper()
 	fake := &fakeRespond{}
@@ -144,7 +143,7 @@ func setupServer(t *testing.T, cfg config) (*fakeRespond, *httptest.Server, conf
 }
 
 // waitForDir blocks until path exists; a contact dir appearing is the
-// observable side effect of a harness turn (including record-only turns).
+// observable side effect of a harness turn.
 func waitForDir(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -199,9 +198,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("second message = %q", msgs[1])
 	}
 
-	// The harness is recycled after each turn, so a second message respawns it
-	// and rediscovers the prior session via session/list + session/load. It
-	// still round-trips.
+	// A second message respawns the recycled harness and rediscovers the
+	// prior session via session/list + session/load.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(incomingText(7, "again"))))
 	msgs = fake.wait(t, 4)
@@ -215,9 +213,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 }
 
-// The second turn must resume the session created by the first (the testagent
-// persists sessions to disk so session/list finds them across the per-turn
-// recycle), not spawn an unbounded set of new sessions.
+// The second turn must resume the session created by the first, not spawn an
+// unbounded set of new sessions.
 func TestSessionDiscoveryAcrossTurns(t *testing.T) {
 	fake, ts, cfg := setupServer(t, config{})
 
@@ -293,8 +290,7 @@ func TestSignatureVerification(t *testing.T) {
 func TestAssigneeGate(t *testing.T) {
 	fake, ts, _ := setupServer(t, config{aiAssigneeID: 471663})
 
-	// Assigned to someone else: recorded via the slash command (record-only
-	// turn), nothing delivered back.
+	// Assigned to someone else: record-only turn, nothing delivered back.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(webhookBody("message.received", 11, 42, 999, "human is handling"))))
 	time.Sleep(500 * time.Millisecond)
@@ -332,13 +328,11 @@ func TestAssigneeGate(t *testing.T) {
 }
 
 // Outgoing messages are only recorded when a human owns the conversation;
-// everywhere else they are the agent's own replies and must be skipped to
-// avoid echo loops.
+// otherwise they are the agent's own replies and recording them would echo.
 func TestOutgoingRecordedOnlyWhenAssignedToHuman(t *testing.T) {
 	fake, ts, cfg := setupServer(t, config{aiAssigneeID: 471663})
 
-	// Assigned to the AI or unassigned: no harness turn at all — no contact
-	// dir appears.
+	// Assigned to the AI or unassigned: no harness turn, no contact dir.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(webhookBody("message.sent", 13, 777, 471663, "our own reply"))))
 	http.Post(ts.URL+"/webhook", "application/json",
@@ -348,8 +342,7 @@ func TestOutgoingRecordedOnlyWhenAssignedToHuman(t *testing.T) {
 		t.Errorf("AI-assigned or unassigned outgoing message spawned a harness turn")
 	}
 
-	// Assigned to a human: recorded as a record-only turn (harness spawns,
-	// nothing delivered back).
+	// Assigned to a human: record-only turn, nothing delivered back.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(webhookBody("message.sent", 13, 778, 999, "human operator reply"))))
 	waitForDir(t, filepath.Join(cfg.dataDir, "13"))

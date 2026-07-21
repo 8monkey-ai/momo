@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// envReader reads env vars with defaults, collecting parse errors so
-// loadConfig can report them all at once.
+// envReader reads env vars with defaults, collecting parse errors for
+// loadConfig to report at once.
 type envReader struct{ err error }
 
 func (r *envReader) str(key, def string) string {

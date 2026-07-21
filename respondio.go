@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// Webhook payload shapes per https://developers.respond.io/docs/webhooks
-// (New Incoming Message / New Outgoing Message), trimmed to the fields we use.
+// Webhook payload shapes per https://developers.respond.io/docs/webhooks,
+// trimmed to the fields we use.
 
 type webhookEvent struct {
 	EventType string       `json:"event_type"`
@@ -22,9 +22,9 @@ type webhookEvent struct {
 }
 
 type contact struct {
-	ID       int64     `json:"id"`
-	// Unassigned arrives as an object of nulls ({"id": null, ...}), so the
-	// value type folds every unassigned shape into ID == 0.
+	ID int64 `json:"id"`
+	// Unassigned arrives as an object of nulls; the value type folds every
+	// unassigned shape into ID == 0.
 	Assignee assignee `json:"assignee"`
 }
 
@@ -49,8 +49,8 @@ type attachment struct {
 	Mime     string `json:"mime"`
 }
 
-// validSignature checks a webhook's X-Webhook-Signature header: base64 of
-// HMAC-SHA256 over the raw body with the webhook's signing key.
+// validSignature checks X-Webhook-Signature: base64 HMAC-SHA256 of the raw
+// body with the webhook's signing key.
 func validSignature(body []byte, signature, key string) bool {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write(body)

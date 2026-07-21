@@ -1,8 +1,7 @@
-// Command testagent is a minimal ACP agent used by the agent-server tests.
-// It mimics the pi-acp harness where the tests depend on its behavior: slash
-// prompts are record-only turns (one ack chunk, never resolves), and sessions
-// persist to a file in the cwd so session/list finds them across process
-// recycles.
+// Command testagent is a minimal ACP agent for the agent-server tests. It
+// mimics pi-acp where the tests depend on it: slash prompts are record-only
+// turns (one ack chunk, never resolves), and sessions persist to a file in
+// the cwd so session/list finds them across process recycles.
 package main
 
 import (
@@ -141,8 +140,8 @@ type sessionRecord struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// sessionsPath lives in the session cwd, which is the process cwd here.
 func sessionsPath() string {
+	// The server spawns us with the session cwd as process cwd.
 	wd, _ := os.Getwd()
 	return filepath.Join(wd, sessionsFile)
 }

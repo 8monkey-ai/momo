@@ -14,8 +14,7 @@ type turn struct {
 	deliver func(string) error
 	perWord time.Duration
 
-	// onFirstChunk fires once, at the first chunk; record-only turns treat
-	// it as the command's ack.
+	// onFirstChunk fires once; record-only turns treat it as the command's ack.
 	onFirstChunk func()
 
 	mu     sync.Mutex
@@ -68,8 +67,8 @@ func (t *turn) addChunk(text string) {
 	}
 }
 
-// finish flushes the trailing paragraph (unless the turn was cancelled) and
-// waits for all queued deliveries to complete.
+// finish flushes the trailing paragraph (unless cancelled) and waits for all
+// queued deliveries to complete.
 func (t *turn) finish(flush bool) {
 	t.mu.Lock()
 	if rest := strings.TrimSpace(t.buf.String()); flush && rest != "" {
