@@ -17,7 +17,11 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-const sessionsFile = ".testagent-sessions.json"
+const (
+	sessionsFile = ".testagent-sessions.json"
+	promptsLog   = ".testagent-prompts.log" // one line per prompt, in arrival order
+	releaseFile  = "release"                // unblocks "block"-prefixed prompts
+)
 
 type agent struct {
 	conn *acp.AgentSideConnection
@@ -108,6 +112,10 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 			text = b.Text.Text
 		}
 	}
+	logPrompt(text)
+	if strings.HasPrefix(text, "block:") {
+		waitForRelease()
+	}
 	if strings.HasPrefix(text, "/") {
 		err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
 			SessionId: p.SessionId,
@@ -128,8 +136,16 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 			Update:    acp.UpdateAgentMessageText(c),
 		})
 		if err != nil {
+			// session/cancel cancels our handler ctx; report a cancelled
+			// turn like a real agent would.
+			if ctx.Err() != nil {
+				return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+			}
 			return acp.PromptResponse{}, err
 		}
+	}
+	if ctx.Err() != nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	}
 	return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 }
@@ -140,10 +156,33 @@ type sessionRecord struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-func sessionsPath() string {
-	// The server spawns us with the session cwd as process cwd.
+// cwdPath resolves name in the process cwd — the server spawns us with the
+// session cwd as process cwd.
+func cwdPath(name string) string {
 	wd, _ := os.Getwd()
-	return filepath.Join(wd, sessionsFile)
+	return filepath.Join(wd, name)
+}
+
+func sessionsPath() string {
+	return cwdPath(sessionsFile)
+}
+
+func logPrompt(text string) {
+	f, err := os.OpenFile(cwdPath(promptsLog), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, text)
+}
+
+func waitForRelease() {
+	for {
+		if _, err := os.Stat(cwdPath(releaseFile)); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func readSessions() []sessionRecord {
