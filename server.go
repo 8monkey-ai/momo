@@ -24,10 +24,7 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// handleWebhook acks immediately and processes the event async. The webhook
-// response is only a delivery ack — replies go through the REST API — so
-// there is nothing to gain by holding the request open, and a response
-// slower than respond.io's timeout would read as failed delivery.
+// handleWebhook acks immediately and processes the event async.
 func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
