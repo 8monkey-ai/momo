@@ -9,10 +9,11 @@ import (
 
 // turn accumulates streamed agent text and delivers it as separate messages
 // split on paragraph boundaries (\n\n), pacing each send like human typing.
-// A nil deliver func discards the output (record-only turns).
+// Record-only turns discard the output.
 type turn struct {
-	deliver func(string) error
-	perWord time.Duration
+	deliver    func(string) error
+	perWord    time.Duration
+	recordOnly bool
 
 	// onFirstChunk fires once; record-only turns treat it as the command's ack.
 	onFirstChunk func()
@@ -24,17 +25,18 @@ type turn struct {
 	done   chan struct{}
 }
 
-func newTurn(deliver func(string) error, perWord time.Duration) *turn {
+func newTurn(deliver func(string) error, perWord time.Duration, recordOnly bool) *turn {
 	t := &turn{
-		deliver: deliver,
-		perWord: perWord,
-		queue:   make(chan string, 64),
-		done:    make(chan struct{}),
+		deliver:    deliver,
+		perWord:    perWord,
+		recordOnly: recordOnly,
+		queue:      make(chan string, 64),
+		done:       make(chan struct{}),
 	}
 	go func() {
 		defer close(t.done)
 		for p := range t.queue {
-			if t.deliver == nil {
+			if t.recordOnly {
 				continue
 			}
 			time.Sleep(typingDelay(p, t.perWord))
