@@ -126,6 +126,37 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 		}
 		select {} // never resolves, like pi-acp
 	}
+	if release, ok := strings.CutPrefix(text, "hold:"); ok {
+		// Stream one paragraph so the client sees the turn running, then stay
+		// blocked past session/cancel until the release file appears.
+		err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: p.SessionId,
+			Update:    acp.UpdateAgentMessageText("holding\n\n"),
+		})
+		if err != nil {
+			return acp.PromptResponse{}, err
+		}
+		<-ctx.Done()
+		for {
+			if _, err := os.Stat(release); err == nil {
+				return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if strings.HasPrefix(text, "cancelme:") {
+		// Stream a partial chunk (no paragraph boundary), then wait for the
+		// steer's session/cancel; the reply never completes.
+		err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: p.SessionId,
+			Update:    acp.UpdateAgentMessageText("partial reply to " + text),
+		})
+		if err != nil {
+			return acp.PromptResponse{}, err
+		}
+		<-ctx.Done()
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+	}
 	chunks := []string{
 		fmt.Sprintf("You said: %s", text),
 		"\n\nSecond paragraph.",
@@ -167,6 +198,8 @@ func sessionsPath() string {
 	return cwdPath(sessionsFile)
 }
 
+// logPrompt appends each prompt in arrival order so tests can assert which
+// prompts reached the agent.
 func logPrompt(text string) {
 	f, err := os.OpenFile(cwdPath(promptsLog), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
