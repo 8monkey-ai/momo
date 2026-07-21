@@ -143,8 +143,8 @@ func (m *manager) sessionFor(ctx context.Context, contactID int64) (*userSession
 }
 
 func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, error) {
-	cwd := filepath.Join(m.cfg.dataDir, fmt.Sprint(contactID))
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	cwd, err := m.cfg.contactDir(contactID)
+	if err != nil {
 		return nil, err
 	}
 	if err := seedContactDir(cwd, m.cfg.contactTemplate); err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -54,6 +55,15 @@ type config struct {
 
 	// reply delivery
 	typingPerWord time.Duration
+}
+
+// contactDir returns the contact's working directory, creating it if needed.
+func (c config) contactDir(contactID int64) (string, error) {
+	dir := filepath.Join(c.dataDir, fmt.Sprint(contactID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func loadConfig() (config, error) {
