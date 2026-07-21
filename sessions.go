@@ -16,7 +16,6 @@ import (
 
 // userSession owns one harness subprocess and one ACP session for a contact.
 type userSession struct {
-	mu          sync.Mutex // serializes prompt turns
 	cmd         *exec.Cmd
 	waitOnce    sync.Once // cmd.Wait must run exactly once
 	conn        *acp.ClientSideConnection
@@ -25,46 +24,201 @@ type userSession struct {
 	turnMu      sync.Mutex // guards currentTurn
 }
 
-// manager maps respond.io contacts to live harness sessions.
+// turnRequest is one prompt turn queued on a contact's actor.
+type turnRequest struct {
+	ctx        context.Context
+	blocks     []acp.ContentBlock
+	deliver    func(string) error
+	recordOnly bool
+	errc       chan error
+}
+
+// actor runs a contact's turns one at a time on a single goroutine, draining
+// its inbox in FIFO order and owning the harness lifecycle. inbox and sess
+// are guarded by the manager's mu.
+type actor struct {
+	m         *manager
+	contactID int64
+	inbox     []turnRequest
+	sess      *userSession // non-nil while a harness is alive
+}
+
+// manager maps respond.io contacts to their actors.
 type manager struct {
 	cfg config
 
-	mu    sync.Mutex
-	users map[int64]*userSession
+	mu     sync.Mutex
+	actors map[int64]*actor
 }
 
 func newManager(cfg config) *manager {
 	return &manager{
-		cfg:   cfg,
-		users: make(map[int64]*userSession),
+		cfg:    cfg,
+		actors: make(map[int64]*actor),
 	}
 }
 
-// sessionFor returns the live session for a contact, spawning the harness and
-// creating (or loading) the ACP session on first use.
-func (m *manager) sessionFor(ctx context.Context, contactID int64) (*userSession, error) {
+// prompt runs one turn, delivering the reply. If a turn is already streaming,
+// it steers: cancels the active turn, then queues the new prompt behind it.
+func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
+	return m.submit(ctx, contactID, blocks, deliver, false)
+}
+
+// record runs a record-only turn: the prompt only persists a message into the
+// session context, and any output is discarded.
+func (m *manager) record(ctx context.Context, contactID int64, blocks []acp.ContentBlock) error {
+	return m.submit(ctx, contactID, blocks, nil, true)
+}
+
+// submit queues the turn on the contact's actor (creating it if needed),
+// cancels any streaming turn so the new prompt steers it, and waits for the
+// result. Enqueueing under mu makes it atomic with the actor's exit check.
+func (m *manager) submit(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
+	req := turnRequest{ctx: ctx, blocks: blocks, deliver: deliver, recordOnly: recordOnly, errc: make(chan error, 1)}
+
 	m.mu.Lock()
-	if s, ok := m.users[contactID]; ok {
-		m.mu.Unlock()
-		return s, nil
+	a, ok := m.actors[contactID]
+	if !ok {
+		a = &actor{m: m, contactID: contactID}
+		m.actors[contactID] = a
+		go a.loop()
 	}
+	a.inbox = append(a.inbox, req)
+	sess := a.sess
 	m.mu.Unlock()
 
-	s, err := m.spawn(ctx, contactID)
-	if err != nil {
-		return nil, err
+	if sess != nil {
+		sess.turnMu.Lock()
+		streaming := sess.currentTurn != nil
+		sess.turnMu.Unlock()
+		if streaming {
+			if err := sess.conn.Cancel(ctx, acp.CancelNotification{SessionId: sess.sessionID}); err != nil {
+				log.Printf("contact %d: cancel: %v", contactID, err)
+			}
+		}
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if existing, ok := m.users[contactID]; ok {
-		s.shutdown()
-		return existing, nil
-	}
-	m.users[contactID] = s
-	return s, nil
+	return <-req.errc
 }
 
+// loop drains the inbox in FIFO order, one turn at a time. When the inbox is
+// empty the actor deregisters and exits; the emptiness check and the map
+// delete happen under the same lock hold senders enqueue under, so a request
+// either lands in the inbox before the exit or creates a fresh actor. A
+// harness left alive by a cancelled turn is shut down before deregistering
+// (still registered, so a concurrent submit can't spawn a second one).
+func (a *actor) loop() {
+	for {
+		a.m.mu.Lock()
+		if len(a.inbox) == 0 {
+			if s := a.sess; s != nil {
+				a.sess = nil
+				a.m.mu.Unlock()
+				s.shutdown()
+				continue
+			}
+			delete(a.m.actors, a.contactID)
+			a.m.mu.Unlock()
+			return
+		}
+		req := a.inbox[0]
+		a.inbox = a.inbox[1:]
+		a.m.mu.Unlock()
+
+		err := a.runTurn(req)
+		if errors.Is(err, errHarnessGone) {
+			log.Printf("contact %d: harness died mid-prompt, retrying with a fresh one", a.contactID)
+			err = a.runTurn(req)
+		}
+		req.errc <- err
+	}
+}
+
+var errHarnessGone = errors.New("harness died mid-prompt")
+
+func (a *actor) runTurn(req turnRequest) error {
+	s := a.sess // only the actor goroutine writes a.sess
+	if s == nil {
+		var err error
+		s, err = a.m.spawn(req.ctx, a.contactID)
+		if err != nil {
+			return err
+		}
+		a.setSession(s)
+	}
+
+	ctx, cancel := context.WithCancel(req.ctx)
+	defer cancel()
+
+	t := newTurn(req.deliver, a.m.cfg.typingPerWord, req.recordOnly)
+	if req.recordOnly {
+		// The record command's prompt never resolves (no agent loop —
+		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
+		// ack chunk instead. FUTURE: drop once fixed upstream.
+		t.onFirstChunk = cancel
+	}
+	s.turnMu.Lock()
+	s.currentTurn = t
+	s.turnMu.Unlock()
+
+	resp, err := s.conn.Prompt(ctx, acp.PromptRequest{
+		SessionId: s.sessionID,
+		Prompt:    req.blocks,
+	})
+
+	s.turnMu.Lock()
+	s.currentTurn = nil
+	s.turnMu.Unlock()
+
+	if err != nil {
+		t.finish(false)
+		// A cancelled ctx on a record-only turn means the ack fired: its
+		// expected end, not a failure.
+		if req.recordOnly && ctx.Err() != nil {
+			a.terminate()
+			return nil
+		}
+		select {
+		case <-s.conn.Done():
+			a.terminate()
+			return errHarnessGone
+		default:
+		}
+		a.terminate()
+		return fmt.Errorf("prompt: %w", err)
+	}
+	t.finish(resp.StopReason != acp.StopReasonCancelled)
+	// A cancelled turn means a steering prompt is queued in the inbox; keep
+	// the harness alive so it lands in the live session.
+	if resp.StopReason == acp.StopReasonCancelled {
+		return nil
+	}
+	// Terminate after every completed turn: recorded messages and restored
+	// history only apply on the next session rebuild (session/load). FUTURE:
+	// termination is server-driven only because pi-acp can't survive its pi
+	// child dying (https://github.com/svkozak/pi-acp/issues/82); once fixed,
+	// the harness could end its own session instead.
+	a.terminate()
+	return nil
+}
+
+// setSession publishes a.sess under mu for submit's steering check; the
+// actor goroutine itself reads it without the lock as the sole writer.
+func (a *actor) setSession(s *userSession) {
+	a.m.mu.Lock()
+	a.sess = s
+	a.m.mu.Unlock()
+}
+
+// terminate shuts the harness down and clears it, so the next turn respawns
+// cleanly.
+func (a *actor) terminate() {
+	s := a.sess
+	a.setSession(nil)
+	s.shutdown()
+}
+
+// spawn starts the harness for a contact and creates (or loads) the ACP
+// session.
 func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, error) {
 	cwd, err := m.cfg.contactDir(contactID)
 	if err != nil {
@@ -110,7 +264,6 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 			})
 			if err == nil {
 				s.sessionID = prev
-				m.watch(contactID, s)
 				return s, nil
 			}
 			log.Printf("contact %d: session/load %q failed, starting fresh: %v", contactID, prev, err)
@@ -126,7 +279,6 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 		return nil, fmt.Errorf("session/new: %w", err)
 	}
 	s.sessionID = resp.SessionId
-	m.watch(contactID, s)
 	return s, nil
 }
 
@@ -183,20 +335,6 @@ func seedContactDir(cwd, template string) error {
 	return nil
 }
 
-// watch drops the session from the registry when the harness exits.
-func (m *manager) watch(contactID int64, s *userSession) {
-	go func() {
-		<-s.conn.Done()
-		s.wait()
-		m.mu.Lock()
-		if m.users[contactID] == s {
-			delete(m.users, contactID)
-		}
-		m.mu.Unlock()
-		log.Printf("contact %d: harness exited", contactID)
-	}()
-}
-
 // shutdown SIGTERMs pi-acp; its exit breaks the stdio pipe and pi shuts down
 // gracefully on stdin EOF, persisting its session (verified empirically).
 func (s *userSession) shutdown() {
@@ -210,123 +348,15 @@ func (s *userSession) wait() {
 	s.waitOnce.Do(func() { s.cmd.Wait() })
 }
 
-var errHarnessGone = errors.New("harness died mid-prompt")
-
-// prompt runs one turn, delivering the reply. If a turn is already streaming,
-// it steers: cancels the active turn, then queues the new prompt (turns are
-// serialized by mu).
-func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
-	return m.run(ctx, contactID, blocks, deliver, false)
-}
-
-// record runs a record-only turn: the prompt only persists a message into the
-// session context, and any output is discarded.
-func (m *manager) record(ctx context.Context, contactID int64, blocks []acp.ContentBlock) error {
-	return m.run(ctx, contactID, blocks, nil, true)
-}
-
-// A prompt queued behind a harness recycle finds its session dead; retry once.
-func (m *manager) run(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
-	err := m.runOnce(ctx, contactID, blocks, deliver, recordOnly)
-	if errors.Is(err, errHarnessGone) {
-		log.Printf("contact %d: harness died mid-prompt, retrying with a fresh one", contactID)
-		err = m.runOnce(ctx, contactID, blocks, deliver, recordOnly)
-	}
-	return err
-}
-
-func (m *manager) runOnce(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
-	s, err := m.sessionFor(ctx, contactID)
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	s.turnMu.Lock()
-	steering := s.currentTurn != nil
-	s.turnMu.Unlock()
-	if steering {
-		if err := s.conn.Cancel(ctx, acp.CancelNotification{SessionId: s.sessionID}); err != nil {
-			log.Printf("contact %d: cancel: %v", contactID, err)
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	t := newTurn(deliver, m.cfg.typingPerWord, recordOnly)
-	if recordOnly {
-		// The record command's prompt never resolves (no agent loop —
-		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
-		// ack chunk instead. FUTURE: drop once fixed upstream.
-		t.onFirstChunk = cancel
-	}
-	s.turnMu.Lock()
-	s.currentTurn = t
-	s.turnMu.Unlock()
-
-	resp, err := s.conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: s.sessionID,
-		Prompt:    blocks,
-	})
-
-	s.turnMu.Lock()
-	s.currentTurn = nil
-	s.turnMu.Unlock()
-
-	if err != nil {
-		t.finish(false)
-		// A cancelled ctx on a record-only turn means the ack fired: its
-		// expected end, not a failure.
-		if recordOnly && ctx.Err() != nil {
-			m.terminate(contactID, s)
-			return nil
-		}
-		select {
-		case <-s.conn.Done():
-			m.terminate(contactID, s)
-			return errHarnessGone
-		default:
-		}
-		m.terminate(contactID, s)
-		return fmt.Errorf("prompt: %w", err)
-	}
-	t.finish(resp.StopReason != acp.StopReasonCancelled)
-	// A cancelled turn means a steering prompt is queued on s.mu; keep the
-	// harness alive so it lands in the live session.
-	if resp.StopReason == acp.StopReasonCancelled {
-		return nil
-	}
-	// Terminate after every completed turn: recorded messages and restored
-	// history only apply on the next session rebuild (session/load). FUTURE:
-	// termination is server-driven only because pi-acp can't survive its pi
-	// child dying (https://github.com/svkozak/pi-acp/issues/82); once fixed,
-	// the harness could end its own session instead.
-	m.terminate(contactID, s)
-	return nil
-}
-
-// terminate shuts a harness down and deregisters it synchronously, so the
-// next message respawns cleanly instead of racing watch()'s async cleanup.
-func (m *manager) terminate(contactID int64, s *userSession) {
-	s.shutdown()
-	m.mu.Lock()
-	if m.users[contactID] == s {
-		delete(m.users, contactID)
-	}
-	m.mu.Unlock()
-}
-
 // stopAll shuts down every live harness; used on server shutdown.
 func (m *manager) stopAll() {
 	m.mu.Lock()
-	sessions := make([]*userSession, 0, len(m.users))
-	for _, s := range m.users {
-		sessions = append(sessions, s)
+	sessions := make([]*userSession, 0, len(m.actors))
+	for _, a := range m.actors {
+		if a.sess != nil {
+			sessions = append(sessions, a.sess)
+		}
 	}
-	m.users = make(map[int64]*userSession)
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
