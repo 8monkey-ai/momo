@@ -40,9 +40,8 @@ func newManager(cfg config) *manager {
 	}
 }
 
-// acpClient handles agent→client calls. The harness uses its own built-in
-// fs/terminal tools (we advertise no client capabilities), so only permission
-// requests and session updates matter.
+// acpClient handles agent→client calls. We advertise no client capabilities,
+// so only permission requests and session updates matter.
 type acpClient struct {
 	sess *userSession
 }
@@ -155,15 +154,6 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	cmd := exec.Command(m.cfg.agentCmd)
 	cmd.Dir = cwd
 	cmd.Stderr = os.Stderr
-	// Own process group so shutdown() can SIGTERM pi-acp's pi child directly
-	// instead of relying on pi-acp to forward the signal.
-	// FUTURE: a plain SIGTERM to pi-acp alone almost suffices — pi-acp exits,
-	// the broken stdio pipe makes pi shut down gracefully via its stdin-EOF
-	// handler — but only if pi-acp actually exits; pi-acp's own child disposal
-	// on shutdown is dead code (agent?.agent?.dispose?.() resolves undefined),
-	// and a wedged pi-acp would leave pi idling forever. Once upstream disposes
-	// its child reliably, drop the group signaling.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -284,13 +274,11 @@ func (m *manager) watch(contactID int64, s *userSession) {
 	}()
 }
 
-// shutdown gracefully stops the harness by SIGTERM-ing its whole process
-// group. pi's rpc-mode SIGTERM handler runs its shutdown (persisting the
-// session and firing session_shutdown hooks), and pi-acp disposes its child
-// and exits; the group signal reaches pi even if pi-acp is wedged.
+// shutdown SIGTERMs pi-acp; its exit breaks the stdio pipe and pi shuts down
+// gracefully on stdin EOF, persisting its session (verified empirically).
 func (s *userSession) shutdown() {
 	if s.cmd.Process != nil {
-		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGTERM)
+		s.cmd.Process.Signal(syscall.SIGTERM)
 	}
 	s.wait()
 }
@@ -301,10 +289,9 @@ func (s *userSession) wait() {
 
 var errHarnessGone = errors.New("harness died mid-prompt")
 
-// prompt runs one turn. If a turn is already streaming, it steers: cancels the
-// active turn, then queues the new prompt (prompt turns are serialized by mu).
-// A prompt that was queued behind a harness recycle finds its session dead;
-// retry once with a freshly spawned harness.
+// prompt runs one turn. If a turn is already streaming, it steers: cancels
+// the active turn, then queues the new prompt (turns are serialized by mu).
+// A prompt queued behind a harness recycle finds its session dead; retry once.
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
 	err := m.promptOnce(ctx, contactID, blocks, deliver)
 	if errors.Is(err, errHarnessGone) {
@@ -337,13 +324,9 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 
 	t := newTurn(deliver, m.cfg.typingPerWord)
 	if deliver == nil {
-		// The record command acks with a chunk once the message is persisted;
-		// the prompt itself never resolves (pi runs extension commands without
-		// an agent loop, so pi-acp never sees agent_end — upstream bug). End
-		// the turn at the ack.
-		// FUTURE: once https://github.com/svkozak/pi-acp/issues/84 is fixed
-		// (command-only prompts resolve their turn), drop this ack wait and
-		// let the Prompt call resolve normally.
+		// The record command's prompt never resolves (no agent loop —
+		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
+		// ack chunk instead. FUTURE: drop once fixed upstream.
 		t.onFirstChunk = cancel
 	}
 	s.turnMu.Lock()
@@ -361,8 +344,8 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 
 	if err != nil {
 		t.finish(false)
-		// A record-only turn never resolves cleanly (no agent loop), so a
-		// cancelled ctx here is its expected end (the ack fired), not a failure.
+		// A cancelled ctx on a record-only turn means the ack fired: its
+		// expected end, not a failure.
 		if deliver == nil && ctx.Err() != nil {
 			m.terminate(contactID, s)
 			return nil
@@ -377,27 +360,22 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		return fmt.Errorf("prompt: %w", err)
 	}
 	t.finish(resp.StopReason != acp.StopReasonCancelled)
-	// A cancelled turn means a steering prompt is already queued on s.mu; keep
-	// the harness alive so it lands in the live session instead of paying a
-	// respawn. The batch's final (uncancelled) turn terminates as usual.
+	// A cancelled turn means a steering prompt is queued on s.mu; keep the
+	// harness alive so it lands in the live session.
 	if resp.StopReason == acp.StopReasonCancelled {
 		return nil
 	}
-	// Terminate after every completed turn: recorded messages only apply on
-	// the next session rebuild, and a fresh session/load restores them.
-	// FUTURE: server-driven termination exists because pi-acp neither notices a
-	// dead pi child nor recovers from it (session/prompt silently resolves as an
-	// empty end_turn — https://github.com/svkozak/pi-acp/issues/82). Once fixed
-	// upstream, revisit: the harness could end its own session after each
-	// generation (e.g. a project extension on agent_settled), making this a
-	// bare session/load-before-prompt with no kill.
+	// Terminate after every completed turn: recorded messages and restored
+	// history only apply on the next session rebuild (session/load). FUTURE:
+	// termination is server-driven only because pi-acp can't survive its pi
+	// child dying (https://github.com/svkozak/pi-acp/issues/82); once fixed,
+	// the harness could end its own session instead.
 	m.terminate(contactID, s)
 	return nil
 }
 
-// terminate gracefully shuts a harness down and deregisters it, so the next
-// message respawns cleanly instead of racing watch()'s async cleanup. Only the
-// still-registered pointer is removed, matching watch().
+// terminate shuts a harness down and deregisters it synchronously, so the
+// next message respawns cleanly instead of racing watch()'s async cleanup.
 func (m *manager) terminate(contactID int64, s *userSession) {
 	s.shutdown()
 	m.mu.Lock()
@@ -407,7 +385,7 @@ func (m *manager) terminate(contactID int64, s *userSession) {
 	m.mu.Unlock()
 }
 
-// stopAll gracefully shuts down every live harness. Used on server shutdown.
+// stopAll shuts down every live harness; used on server shutdown.
 func (m *manager) stopAll() {
 	m.mu.Lock()
 	sessions := make([]*userSession, 0, len(m.users))
