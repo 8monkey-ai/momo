@@ -177,8 +177,8 @@ func (s *server) attachmentBlocks(contactID int64, a attachment) ([]acp.ContentB
 		if name == "" || name == "." {
 			name = "attachment"
 		}
-		dir := filepath.Join(s.cfg.dataDir, fmt.Sprint(contactID))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		dir, err := s.cfg.contactDir(contactID)
+		if err != nil {
 			return nil, err
 		}
 		path := filepath.Join(dir, name)
