@@ -9,7 +9,7 @@ Register these in respond.io (Settings → Integrations → Webhook), pointing b
 - **New Incoming Message** (`message.received`) — a contact messaged the workspace.
 - **New Outgoing Message** (`message.sent`) — an operator (or the agent itself) replied.
 
-Events are acked immediately and processed asynchronously: an agent turn will far outlive respond.io's webhook timeout.
+Events are acked immediately and processed asynchronously: the webhook response is only a delivery ack (replies go through the REST API), so holding the request open would gain nothing and risk hitting respond.io's delivery timeout.
 
 ## Configuration
 
