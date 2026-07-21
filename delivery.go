@@ -8,7 +8,7 @@ import (
 )
 
 // turn accumulates streamed agent text and delivers it as separate messages
-// split on paragraph boundaries (\n\n), pacing each send like human typing.
+// split on paragraph boundaries, pacing each send like human typing.
 // Record-only turns discard the output.
 type turn struct {
 	deliver    func(string) error

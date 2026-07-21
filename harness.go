@@ -17,7 +17,7 @@ import (
 // userSession owns one harness subprocess and one ACP session for a contact.
 type userSession struct {
 	cmd       *exec.Cmd
-	waitOnce  sync.Once // cmd.Wait must run exactly once
+	waitOnce  sync.Once
 	conn      *acp.ClientSideConnection
 	sessionID acp.SessionId
 	// turn routes streamed chunks: the actor stores it around each prompt,
@@ -25,8 +25,8 @@ type userSession struct {
 	turn atomic.Pointer[turn]
 }
 
-// spawn starts the harness for a contact and creates (or loads) the ACP
-// session.
+// spawn starts a contact's harness and loads its latest ACP session, falling
+// back to a new one.
 func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, error) {
 	cwd, err := m.cfg.contactDir(contactID)
 	if err != nil {
@@ -90,8 +90,8 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	return s, nil
 }
 
-// latestSession returns the most recently updated session the agent lists for
-// cwd, or "" if it lists none or doesn't support session/list.
+// latestSession returns the most recently updated session the agent lists
+// for cwd, or "" if it lists none or doesn't support session/list.
 func latestSession(ctx context.Context, conn *acp.ClientSideConnection, cwd string) acp.SessionId {
 	var newest acp.SessionInfo
 	var cursor *string
@@ -115,7 +115,7 @@ func latestSession(ctx context.Context, conn *acp.ClientSideConnection, cwd stri
 
 // seedContactDir symlinks the template's entries into the contact dir so the
 // harness finds its project config (e.g. gato's .pi/, AGENTS.md) in the
-// session cwd. Existing entries are left alone; .git is skipped.
+// session cwd. Existing entries are kept; .git is skipped.
 func seedContactDir(cwd, template string) error {
 	if template == "" {
 		return nil

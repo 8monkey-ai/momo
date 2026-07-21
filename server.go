@@ -22,8 +22,8 @@ const (
 	recordOutgoingCommand = "/add-assistant-message"
 )
 
-// A reply containing a video URL is delivered as a video attachment, so the
-// contact gets a playable video rather than a link.
+// Replies containing a video URL become video attachments, so the contact
+// gets a playable video rather than a link.
 var videoURLPattern = regexp.MustCompile(`(?i)https?://\S+\.(mp4|mov|webm)\b`)
 
 type server struct {
@@ -49,8 +49,8 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// handleWebhook acks immediately and processes the event asynchronously: a
-// prompt turn far outlives respond.io's webhook timeout.
+// handleWebhook acks immediately and processes the event async: a prompt
+// turn far outlives respond.io's webhook timeout.
 func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -85,8 +85,6 @@ func (s *server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	go handle(ev)
 }
 
-// handleIncoming prompts the harness for a reply; if a human assignee owns
-// the conversation, the message is only recorded into the context.
 func (s *server) handleIncoming(ev webhookEvent) {
 	if s.assignedToHuman(ev.Contact) {
 		s.record(ev, recordIncomingCommand)
@@ -113,8 +111,8 @@ func (s *server) handleIncoming(ev webhookEvent) {
 }
 
 // handleOutgoing records human operator replies into the harness context.
-// Everything else outgoing is the AI's own replies; recording those would
-// echo them back into its context.
+// Anything else outgoing is the AI's own reply; recording it would echo it
+// back into its context.
 func (s *server) handleOutgoing(ev webhookEvent) {
 	if !s.assignedToHuman(ev.Contact) {
 		return
@@ -127,13 +125,13 @@ func (s *server) assignedToHuman(c contact) bool {
 }
 
 // record appends the message to the harness context without generating a
-// reply. Non-text messages are dropped: they can't ride a slash command.
+// reply. Non-text messages can't ride a slash command and are dropped.
 func (s *server) record(ev webhookEvent, command string) {
 	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
 		return
 	}
-	// pi-acp splits command from args at the first literal space; the explicit
-	// space keeps multi-line text intact as args.
+	// pi-acp splits command from args at the first literal space, so
+	// multi-line text survives intact as args.
 	prompt := command + " " + ev.Message.Message.Text
 	err := s.mgr.record(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)})
 	if err != nil {
@@ -171,8 +169,8 @@ func (s *server) attachmentBlocks(contactID int64, a attachment) ([]acp.ContentB
 	case "audio":
 		return []acp.ContentBlock{acp.AudioBlock(base64.StdEncoding.EncodeToString(data), a.Mime)}, nil
 	default:
-		// Other files land in the contact's cwd; the agent reads them via the
-		// resource link.
+		// Saved into the contact's cwd; the agent reads it via the resource
+		// link.
 		name := filepath.Base(a.FileName)
 		if name == "" || name == "." {
 			name = "attachment"

@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// respondClient calls the respond.io REST API (sending messages, downloading
-// attachments).
+// respondClient calls the respond.io REST API.
 type respondClient struct {
 	baseURL string
 	token   string

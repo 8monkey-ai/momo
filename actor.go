@@ -10,7 +10,6 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// turnRequest is one prompt turn queued on a contact's actor.
 type turnRequest struct {
 	ctx        context.Context
 	blocks     []acp.ContentBlock
@@ -22,13 +21,12 @@ type turnRequest struct {
 // actor runs a contact's turns one at a time on a single goroutine, draining
 // its inbox in FIFO order and owning the harness lifecycle — including
 // steering: it cancels the in-flight prompt when a newer request arrives.
-// inbox and sess are guarded by the manager's mu; arrived carries a coalesced
-// "new request enqueued" signal into the actor's select.
+// inbox and sess are guarded by the manager's mu.
 type actor struct {
 	m         *manager
 	contactID int64
 	inbox     []turnRequest
-	arrived   chan struct{} // buffered 1; signalled under mu after each enqueue
+	arrived   chan struct{} // coalesced enqueue signal; buffered 1, sent under mu
 	sess      *userSession  // non-nil while a harness is alive
 }
 
@@ -53,15 +51,15 @@ func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.Cont
 	return m.submit(ctx, contactID, blocks, deliver, false)
 }
 
-// record runs a record-only turn: the prompt only persists a message into the
-// session context, and any output is discarded.
+// record runs a record-only turn: the prompt persists a message into the
+// session context and any output is discarded.
 func (m *manager) record(ctx context.Context, contactID int64, blocks []acp.ContentBlock) error {
 	return m.submit(ctx, contactID, blocks, nil, true)
 }
 
 // submit queues the turn on the contact's actor (creating it if needed) and
 // waits for the result. Enqueueing under mu makes it atomic with the actor's
-// exit check; the arrival signal lets the actor steer an in-flight prompt.
+// exit check in loop.
 func (m *manager) submit(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
 	req := turnRequest{ctx: ctx, blocks: blocks, deliver: deliver, recordOnly: recordOnly, errc: make(chan error, 1)}
 
@@ -82,12 +80,11 @@ func (m *manager) submit(ctx context.Context, contactID int64, blocks []acp.Cont
 	return <-req.errc
 }
 
-// loop drains the inbox in FIFO order, one turn at a time. When the inbox is
-// empty the actor deregisters and exits; the emptiness check and the map
-// delete happen under the same lock hold senders enqueue under, so a request
-// either lands in the inbox before the exit or creates a fresh actor. A
-// harness left alive by a cancelled turn is shut down before deregistering
-// (still registered, so a concurrent submit can't spawn a second one).
+// loop drains the inbox, one turn at a time. On empty inbox it deregisters
+// and exits; check and delete share one lock hold with submit's enqueue, so a
+// request either lands before the exit or creates a fresh actor. A harness
+// left alive by a cancelled turn is shut down before deregistering, while
+// still registered, so a concurrent submit can't spawn a second one.
 func (a *actor) loop() {
 	for {
 		a.m.mu.Lock()
@@ -120,9 +117,8 @@ var errHarnessGone = errors.New("harness died mid-prompt")
 
 // runTurn prompts the harness with one request and waits for it, steering
 // (cancelling the in-flight prompt) when a newer request arrives. A request
-// already superseded at pickup (stale) runs pre-steered: it is still prompted
-// so its message enters the session, but cancelled as soon as it starts
-// streaming.
+// already superseded at pickup (stale) is still prompted so its message
+// enters the session, but cancelled as soon as it starts streaming.
 func (a *actor) runTurn(req turnRequest, stale bool) error {
 	s := a.sess // only the actor goroutine writes a.sess
 	if s == nil {
@@ -147,9 +143,9 @@ func (a *actor) runTurn(req turnRequest, stale bool) error {
 	steered := false
 	switch {
 	case req.recordOnly:
-		// The record command's prompt never resolves (no agent loop —
-		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
-		// ack chunk instead. FUTURE: drop once fixed upstream.
+		// The record command's prompt never resolves (pi runs it without an
+		// agent loop); end the turn at the ack chunk instead. FUTURE: drop
+		// once https://github.com/svkozak/pi-acp/issues/84 is fixed.
 		t.onFirstChunk = cancel
 	case stale:
 		// Cancelling at the first chunk (not before the prompt) guarantees
@@ -178,7 +174,7 @@ func (a *actor) runTurn(req turnRequest, stale bool) error {
 		case res = <-done:
 			done = nil
 		case <-a.arrived:
-			// The signal may predate this turn (coalesced); only a non-empty
+			// The coalesced signal may predate this turn; only a non-empty
 			// inbox means a newer request supersedes it. Record-only turns
 			// self-terminate at the ack chunk and must not be steered.
 			a.m.mu.Lock()
@@ -212,8 +208,8 @@ func (a *actor) runTurn(req turnRequest, stale bool) error {
 		return fmt.Errorf("prompt: %w", err)
 	}
 	t.finish(resp.StopReason != acp.StopReasonCancelled)
-	// A cancelled turn means a steering prompt is queued in the inbox; keep
-	// the harness alive so it lands in the live session.
+	// A cancelled turn means a steering prompt is queued; keep the harness
+	// alive so it lands in the live session.
 	if resp.StopReason == acp.StopReasonCancelled {
 		return nil
 	}
@@ -226,23 +222,21 @@ func (a *actor) runTurn(req turnRequest, stale bool) error {
 	return nil
 }
 
-// setSession publishes a.sess under mu for stopAll; the actor goroutine
-// itself reads it without the lock as the sole writer.
+// setSession publishes a.sess under mu for stopAll; the actor goroutine, the
+// sole writer, reads it without the lock.
 func (a *actor) setSession(s *userSession) {
 	a.m.mu.Lock()
 	a.sess = s
 	a.m.mu.Unlock()
 }
 
-// terminate shuts the harness down and clears it, so the next turn respawns
-// cleanly.
 func (a *actor) terminate() {
 	s := a.sess
 	a.setSession(nil)
 	s.shutdown()
 }
 
-// stopAll shuts down every live harness; used on server shutdown.
+// stopAll shuts down every live harness on server shutdown.
 func (m *manager) stopAll() {
 	m.mu.Lock()
 	sessions := make([]*userSession, 0, len(m.actors))

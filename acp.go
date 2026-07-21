@@ -6,8 +6,8 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// acpClient handles agent→client calls. We advertise no client capabilities,
-// so only permission requests and session updates matter.
+// acpClient handles agent→client calls. No client capabilities are
+// advertised, so only permission requests and session updates matter.
 type acpClient struct {
 	sess *userSession
 }

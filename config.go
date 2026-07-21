@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// envReader reads env vars with defaults, collecting parse errors for
-// loadConfig to report at once.
+// envReader collects parse errors so loadConfig reports them all at once.
 type envReader struct{ err error }
 
 func (r *envReader) str(key, def string) string {
@@ -33,26 +32,22 @@ func (r *envReader) int(key string, def int64) int64 {
 }
 
 type config struct {
-	// http server
 	port string
 
-	// respond.io
 	apiToken           string
 	apiBaseURL         string
 	incomingSigningKey string
 	outgoingSigningKey string
 	aiAssigneeID       int64
 
-	// harness
-	agentCmd        string // the pi-acp harness; overridden only in tests
+	agentCmd        string // overridden only in tests
 	dataDir         string
 	contactTemplate string
 
-	// reply delivery
 	typingPerWord time.Duration
 }
 
-// contactDir returns the contact's working directory, creating it if needed.
+// contactDir returns the contact's working directory, creating it if missing.
 func (c config) contactDir(contactID int64) (string, error) {
 	dir := filepath.Join(c.dataDir, fmt.Sprint(contactID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
