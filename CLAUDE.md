@@ -44,5 +44,4 @@ The deployed harness is `pi-acp` (npm, global) driving `pi` with the gato sales 
 
 ## Known open issues
 
-- Ordering of multiple messages queued behind an active turn relies on mutex wake-up order, which is not FIFO.
-- Per-turn harness termination is server-driven only because pi-acp can't survive its pi child dying (silent empty `end_turn` on the next prompt — https://github.com/svkozak/pi-acp/issues/82). Once fixed upstream, revisit harness-side session end (see the FUTURE note in sessions.go).
+- Per-turn harness termination is server-driven only because pi-acp can't survive its pi child dying (silent empty `end_turn` on the next prompt — https://github.com/svkozak/pi-acp/issues/82). Once fixed upstream, revisit harness-side session end (see the FUTURE note in `runTurn` in sessions.go).
