@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -106,13 +107,8 @@ func TestSteerSkipsDeliveryOfSupersededPrompt(t *testing.T) {
 	}
 	prompts := strings.Split(strings.TrimSpace(string(log)), "\n")
 	want := []string{"hold:" + release, "cancelme:A", "B-final"}
-	if len(prompts) != len(want) {
+	if !slices.Equal(prompts, want) {
 		t.Fatalf("agent saw prompts %q, want %q", prompts, want)
-	}
-	for i := range want {
-		if prompts[i] != want[i] {
-			t.Fatalf("agent saw prompts %q, want %q", prompts, want)
-		}
 	}
 
 	// A was cancelled at its first chunk: its reply is never delivered.
@@ -122,7 +118,7 @@ func TestSteerSkipsDeliveryOfSupersededPrompt(t *testing.T) {
 
 	// B ran an uncancelled turn and its reply arrived in full.
 	wantB := []string{"You said: B-final", "Second paragraph."}
-	if msgs := recB.got(); len(msgs) != 2 || msgs[0] != wantB[0] || msgs[1] != wantB[1] {
+	if msgs := recB.got(); !slices.Equal(msgs, wantB) {
 		t.Errorf("B delivered %q, want %q", msgs, wantB)
 	}
 }

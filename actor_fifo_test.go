@@ -22,7 +22,7 @@ func TestActorProcessesPromptsInFIFOOrder(t *testing.T) {
 	cfg := config{agentCmd: testAgentBin(), dataDir: t.TempDir()}
 	m := newManager(cfg)
 
-	const contactID = int64(99)
+	const contactID = 99
 	contactDir := filepath.Join(cfg.dataDir, "99")
 	logPath := filepath.Join(contactDir, ".testagent-prompts.log")
 
@@ -35,16 +35,6 @@ func TestActorProcessesPromptsInFIFOOrder(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-	}
-
-	inboxLen := func() int {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		a := m.actors[contactID]
-		if a == nil {
-			return -1
-		}
-		return len(a.inbox)
 	}
 
 	prompts := []string{"block:hold", "msg-1", "msg-2", "msg-3"}
@@ -68,7 +58,7 @@ func TestActorProcessesPromptsInFIFOOrder(t *testing.T) {
 	// length pins each enqueue.
 	for i, text := range prompts[1:] {
 		submit(text)
-		waitFor("follower enqueued", func() bool { return inboxLen() == i+1 })
+		waitInboxLen(t, m, contactID, i+1)
 	}
 
 	if err := os.WriteFile(filepath.Join(contactDir, "release"), nil, 0o644); err != nil {

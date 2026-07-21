@@ -114,7 +114,7 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 	}
 	logPrompt(text)
 	if strings.HasPrefix(text, "block:") {
-		waitForRelease()
+		awaitFile(cwdPath(releaseFile))
 	}
 	if strings.HasPrefix(text, "/") {
 		err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
@@ -137,12 +137,8 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 			return acp.PromptResponse{}, err
 		}
 		<-ctx.Done()
-		for {
-			if _, err := os.Stat(release); err == nil {
-				return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		awaitFile(release)
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	}
 	if strings.HasPrefix(text, "cancelme:") {
 		// Stream a partial chunk (no paragraph boundary), then wait for the
@@ -209,12 +205,13 @@ func logPrompt(text string) {
 	fmt.Fprintln(f, text)
 }
 
-func waitForRelease() {
+// awaitFile blocks until path exists.
+func awaitFile(path string) {
 	for {
-		if _, err := os.Stat(cwdPath(releaseFile)); err == nil {
+		if _, err := os.Stat(path); err == nil {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
