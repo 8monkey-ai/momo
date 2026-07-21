@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -16,12 +17,13 @@ import (
 
 // userSession owns one harness subprocess and one ACP session for a contact.
 type userSession struct {
-	cmd         *exec.Cmd
-	waitOnce    sync.Once // cmd.Wait must run exactly once
-	conn        *acp.ClientSideConnection
-	sessionID   acp.SessionId
-	currentTurn *turn      // non-nil while a prompt turn is streaming
-	turnMu      sync.Mutex // guards currentTurn
+	cmd       *exec.Cmd
+	waitOnce  sync.Once // cmd.Wait must run exactly once
+	conn      *acp.ClientSideConnection
+	sessionID acp.SessionId
+	// turn routes streamed chunks: the actor stores it around each prompt,
+	// the connection's read goroutine loads it.
+	turn atomic.Pointer[turn]
 }
 
 // turnRequest is one prompt turn queued on a contact's actor.
@@ -34,13 +36,16 @@ type turnRequest struct {
 }
 
 // actor runs a contact's turns one at a time on a single goroutine, draining
-// its inbox in FIFO order and owning the harness lifecycle. inbox and sess
-// are guarded by the manager's mu.
+// its inbox in FIFO order and owning the harness lifecycle — including
+// steering: it cancels the in-flight prompt when a newer request arrives.
+// inbox and sess are guarded by the manager's mu; arrived carries a coalesced
+// "new request enqueued" signal into the actor's select.
 type actor struct {
 	m         *manager
 	contactID int64
 	inbox     []turnRequest
-	sess      *userSession // non-nil while a harness is alive
+	arrived   chan struct{} // buffered 1; signalled under mu after each enqueue
+	sess      *userSession  // non-nil while a harness is alive
 }
 
 // manager maps respond.io contacts to their actors.
@@ -58,8 +63,8 @@ func newManager(cfg config) *manager {
 	}
 }
 
-// prompt runs one turn, delivering the reply. If a turn is already streaming,
-// it steers: cancels the active turn, then queues the new prompt behind it.
+// prompt runs one turn, delivering the reply. If a turn is already in flight,
+// the actor steers: cancels it, then runs this prompt behind it.
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
 	return m.submit(ctx, contactID, blocks, deliver, false)
 }
@@ -70,33 +75,26 @@ func (m *manager) record(ctx context.Context, contactID int64, blocks []acp.Cont
 	return m.submit(ctx, contactID, blocks, nil, true)
 }
 
-// submit queues the turn on the contact's actor (creating it if needed),
-// cancels any streaming turn so the new prompt steers it, and waits for the
-// result. Enqueueing under mu makes it atomic with the actor's exit check.
+// submit queues the turn on the contact's actor (creating it if needed) and
+// waits for the result. Enqueueing under mu makes it atomic with the actor's
+// exit check; the arrival signal lets the actor steer an in-flight prompt.
 func (m *manager) submit(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
 	req := turnRequest{ctx: ctx, blocks: blocks, deliver: deliver, recordOnly: recordOnly, errc: make(chan error, 1)}
 
 	m.mu.Lock()
 	a, ok := m.actors[contactID]
 	if !ok {
-		a = &actor{m: m, contactID: contactID}
+		a = &actor{m: m, contactID: contactID, arrived: make(chan struct{}, 1)}
 		m.actors[contactID] = a
 		go a.loop()
 	}
 	a.inbox = append(a.inbox, req)
-	sess := a.sess
+	select {
+	case a.arrived <- struct{}{}:
+	default:
+	}
 	m.mu.Unlock()
 
-	if sess != nil {
-		sess.turnMu.Lock()
-		streaming := sess.currentTurn != nil
-		sess.turnMu.Unlock()
-		if streaming {
-			if err := sess.conn.Cancel(ctx, acp.CancelNotification{SessionId: sess.sessionID}); err != nil {
-				log.Printf("contact %d: cancel: %v", contactID, err)
-			}
-		}
-	}
 	return <-req.errc
 }
 
@@ -122,12 +120,13 @@ func (a *actor) loop() {
 		}
 		req := a.inbox[0]
 		a.inbox = a.inbox[1:]
+		stale := len(a.inbox) > 0
 		a.m.mu.Unlock()
 
-		err := a.runTurn(req)
+		err := a.runTurn(req, stale)
 		if errors.Is(err, errHarnessGone) {
 			log.Printf("contact %d: harness died mid-prompt, retrying with a fresh one", a.contactID)
-			err = a.runTurn(req)
+			err = a.runTurn(req, stale)
 		}
 		req.errc <- err
 	}
@@ -135,7 +134,12 @@ func (a *actor) loop() {
 
 var errHarnessGone = errors.New("harness died mid-prompt")
 
-func (a *actor) runTurn(req turnRequest) error {
+// runTurn prompts the harness with one request and waits for it, steering
+// (cancelling the in-flight prompt) when a newer request arrives. A request
+// already superseded at pickup (stale) runs pre-steered: it is still prompted
+// so its message enters the session, but cancelled as soon as it starts
+// streaming.
+func (a *actor) runTurn(req turnRequest, stale bool) error {
 	s := a.sess // only the actor goroutine writes a.sess
 	if s == nil {
 		var err error
@@ -149,25 +153,62 @@ func (a *actor) runTurn(req turnRequest) error {
 	ctx, cancel := context.WithCancel(req.ctx)
 	defer cancel()
 
+	steer := func() {
+		if err := s.conn.Cancel(ctx, acp.CancelNotification{SessionId: s.sessionID}); err != nil {
+			log.Printf("contact %d: cancel: %v", a.contactID, err)
+		}
+	}
+
 	t := newTurn(req.deliver, a.m.cfg.typingPerWord, req.recordOnly)
-	if req.recordOnly {
+	steered := false
+	switch {
+	case req.recordOnly:
 		// The record command's prompt never resolves (no agent loop —
 		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
 		// ack chunk instead. FUTURE: drop once fixed upstream.
 		t.onFirstChunk = cancel
+	case stale:
+		// Cancelling at the first chunk (not before the prompt) guarantees
+		// the agent has registered the prompt the cancel targets.
+		t.onFirstChunk = steer
+		steered = true
 	}
-	s.turnMu.Lock()
-	s.currentTurn = t
-	s.turnMu.Unlock()
+	s.turn.Store(t)
 
-	resp, err := s.conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: s.sessionID,
-		Prompt:    req.blocks,
-	})
+	type promptResult struct {
+		resp acp.PromptResponse
+		err  error
+	}
+	done := make(chan promptResult, 1)
+	go func() {
+		resp, err := s.conn.Prompt(ctx, acp.PromptRequest{
+			SessionId: s.sessionID,
+			Prompt:    req.blocks,
+		})
+		done <- promptResult{resp, err}
+	}()
 
-	s.turnMu.Lock()
-	s.currentTurn = nil
-	s.turnMu.Unlock()
+	var res promptResult
+	for done != nil {
+		select {
+		case res = <-done:
+			done = nil
+		case <-a.arrived:
+			// The signal may predate this turn (coalesced); only a non-empty
+			// inbox means a newer request supersedes it. Record-only turns
+			// self-terminate at the ack chunk and must not be steered.
+			a.m.mu.Lock()
+			superseded := len(a.inbox) > 0
+			a.m.mu.Unlock()
+			if superseded && !req.recordOnly && !steered {
+				steered = true
+				steer()
+			}
+		}
+	}
+	resp, err := res.resp, res.err
+
+	s.turn.Store(nil)
 
 	if err != nil {
 		t.finish(false)
@@ -201,8 +242,8 @@ func (a *actor) runTurn(req turnRequest) error {
 	return nil
 }
 
-// setSession publishes a.sess under mu for submit's steering check; the
-// actor goroutine itself reads it without the lock as the sole writer.
+// setSession publishes a.sess under mu for stopAll; the actor goroutine
+// itself reads it without the lock as the sole writer.
 func (a *actor) setSession(s *userSession) {
 	a.m.mu.Lock()
 	a.sess = s

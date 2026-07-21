@@ -15,7 +15,8 @@ type turn struct {
 	perWord    time.Duration
 	recordOnly bool
 
-	// onFirstChunk fires once; record-only turns treat it as the command's ack.
+	// onFirstChunk fires once: record-only turns treat it as the command's
+	// ack, superseded turns as the cue to steer-cancel.
 	onFirstChunk func()
 
 	mu     sync.Mutex

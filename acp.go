@@ -46,10 +46,7 @@ func (c *acpClient) SessionUpdate(ctx context.Context, n acp.SessionNotification
 	if u.AgentMessageChunk == nil || u.AgentMessageChunk.Content.Text == nil {
 		return nil
 	}
-	c.sess.turnMu.Lock()
-	t := c.sess.currentTurn
-	c.sess.turnMu.Unlock()
-	if t != nil {
+	if t := c.sess.turn.Load(); t != nil {
 		t.addChunk(u.AgentMessageChunk.Content.Text.Text)
 	}
 	return nil
