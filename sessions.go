@@ -212,19 +212,30 @@ func (s *userSession) wait() {
 
 var errHarnessGone = errors.New("harness died mid-prompt")
 
-// prompt runs one turn. If a turn is already streaming, it steers: cancels
-// the active turn, then queues the new prompt (turns are serialized by mu).
-// A prompt queued behind a harness recycle finds its session dead; retry once.
+// prompt runs one turn, delivering the reply. If a turn is already streaming,
+// it steers: cancels the active turn, then queues the new prompt (turns are
+// serialized by mu).
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
-	err := m.promptOnce(ctx, contactID, blocks, deliver)
+	return m.run(ctx, contactID, blocks, deliver, false)
+}
+
+// record runs a record-only turn: the prompt only persists a message into the
+// session context, and any output is discarded.
+func (m *manager) record(ctx context.Context, contactID int64, blocks []acp.ContentBlock) error {
+	return m.run(ctx, contactID, blocks, nil, true)
+}
+
+// A prompt queued behind a harness recycle finds its session dead; retry once.
+func (m *manager) run(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
+	err := m.runOnce(ctx, contactID, blocks, deliver, recordOnly)
 	if errors.Is(err, errHarnessGone) {
 		log.Printf("contact %d: harness died mid-prompt, retrying with a fresh one", contactID)
-		err = m.promptOnce(ctx, contactID, blocks, deliver)
+		err = m.runOnce(ctx, contactID, blocks, deliver, recordOnly)
 	}
 	return err
 }
 
-func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
+func (m *manager) runOnce(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error, recordOnly bool) error {
 	s, err := m.sessionFor(ctx, contactID)
 	if err != nil {
 		return err
@@ -245,8 +256,8 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	t := newTurn(deliver, m.cfg.typingPerWord)
-	if deliver == nil {
+	t := newTurn(deliver, m.cfg.typingPerWord, recordOnly)
+	if recordOnly {
 		// The record command's prompt never resolves (no agent loop —
 		// https://github.com/svkozak/pi-acp/issues/84); end the turn at the
 		// ack chunk instead. FUTURE: drop once fixed upstream.
@@ -269,7 +280,7 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		t.finish(false)
 		// A cancelled ctx on a record-only turn means the ack fired: its
 		// expected end, not a failure.
-		if deliver == nil && ctx.Err() != nil {
+		if recordOnly && ctx.Err() != nil {
 			m.terminate(contactID, s)
 			return nil
 		}

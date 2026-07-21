@@ -135,7 +135,7 @@ func (s *server) record(ev webhookEvent, command string) {
 	// pi-acp splits command from args at the first literal space; the explicit
 	// space keeps multi-line text intact as args.
 	prompt := command + " " + ev.Message.Message.Text
-	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
+	err := s.mgr.record(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)})
 	if err != nil {
 		log.Printf("contact %d: record %s: %v", ev.Contact.ID, command, err)
 	}

@@ -25,7 +25,7 @@ func TestChunkingOnParagraphs(t *testing.T) {
 		got = append(got, s)
 		mu.Unlock()
 		return nil
-	}, 0)
+	}, 0, false)
 	tn.addChunk("first para")
 	tn.addChunk("graph\n\nsecond")
 	tn.addChunk(" paragraph\n\n")
@@ -40,7 +40,7 @@ func TestChunkingOnParagraphs(t *testing.T) {
 
 func TestChunkingCancelledDropsTail(t *testing.T) {
 	var got []string
-	tn := newTurn(func(s string) error { got = append(got, s); return nil }, 0)
+	tn := newTurn(func(s string) error { got = append(got, s); return nil }, 0, false)
 	tn.addChunk("done\n\npartial tail")
 	tn.finish(false)
 	if len(got) != 1 || got[0] != "done" {
