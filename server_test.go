@@ -199,8 +199,9 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("second message = %q", msgs[1])
 	}
 
-	// Second message from the same contact reuses the live session (same
-	// harness process, no re-init) and still round-trips.
+	// The harness is recycled after each turn, so a second message respawns it
+	// and rediscovers the prior session via session/list + session/load. It
+	// still round-trips.
 	http.Post(ts.URL+"/webhook", "application/json",
 		strings.NewReader(string(incomingText(7, "again"))))
 	msgs = fake.wait(t, 4)
@@ -208,15 +209,35 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("third message = %q", msgs[2])
 	}
 
-	// The sessionId must be persisted for session/load after restarts.
-	b, err := os.ReadFile(filepath.Join(cfg.dataDir, "sessions.json"))
-	if err != nil {
-		t.Fatalf("session store not written: %v", err)
+	// No persistent session store: discovery is stateless via session/list.
+	if _, err := os.Stat(filepath.Join(cfg.dataDir, "sessions.json")); !os.IsNotExist(err) {
+		t.Errorf("sessions.json should not exist; discovery is via session/list")
 	}
-	var store map[string]string
-	json.Unmarshal(b, &store)
-	if store["7"] != "test-session" {
-		t.Errorf("session store = %v", store)
+}
+
+// The second turn must resume the session created by the first (the testagent
+// persists sessions to disk so session/list finds them across the per-turn
+// recycle), not spawn an unbounded set of new sessions.
+func TestSessionDiscoveryAcrossTurns(t *testing.T) {
+	fake, ts, cfg := setupServer(t, config{})
+
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(incomingText(21, "first"))))
+	fake.wait(t, 2)
+	http.Post(ts.URL+"/webhook", "application/json",
+		strings.NewReader(string(incomingText(21, "second"))))
+	fake.wait(t, 4)
+
+	b, err := os.ReadFile(filepath.Join(cfg.dataDir, "21", ".testagent-sessions.json"))
+	if err != nil {
+		t.Fatalf("reading testagent sessions: %v", err)
+	}
+	var recs []struct {
+		SessionId string `json:"sessionId"`
+	}
+	json.Unmarshal(b, &recs)
+	if len(recs) != 1 {
+		t.Errorf("expected exactly one session created (rest resumed via load), got %d: %v", len(recs), recs)
 	}
 }
 

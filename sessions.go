@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,15 +10,12 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
-	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 )
 
 // userSession owns one harness subprocess and one ACP session for a contact.
 type userSession struct {
-	contactID int64
-
 	mu          sync.Mutex // serializes prompt turns
 	cmd         *exec.Cmd
 	waitOnce    sync.Once // cmd.Wait must run exactly once
@@ -31,8 +27,7 @@ type userSession struct {
 
 // manager maps respond.io contacts to live harness sessions.
 type manager struct {
-	cfg   config
-	store *sessionStore
+	cfg config
 
 	mu    sync.Mutex
 	users map[int64]*userSession
@@ -41,7 +36,6 @@ type manager struct {
 func newManager(cfg config) *manager {
 	return &manager{
 		cfg:   cfg,
-		store: newSessionStore(filepath.Join(cfg.dataDir, "sessions.json")),
 		users: make(map[int64]*userSession),
 	}
 }
@@ -161,10 +155,14 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 	cmd := exec.Command(m.cfg.agentCmd)
 	cmd.Dir = cwd
 	cmd.Stderr = os.Stderr
-	// Own process group so shutdown can SIGKILL the harness and its children
-	// together: a gracefully-quitting child may run shutdown hooks that break
-	// session resume (e.g. pi-session-gzip compresses the history file, which
-	// pi-acp's session/load then cannot read).
+	// Own process group so shutdown() can SIGTERM pi-acp's pi child directly
+	// instead of relying on pi-acp to forward the signal.
+	// FUTURE: a plain SIGTERM to pi-acp alone almost suffices — pi-acp exits,
+	// the broken stdio pipe makes pi shut down gracefully via its stdin-EOF
+	// handler — but only if pi-acp actually exits; pi-acp's own child disposal
+	// on shutdown is dead code (agent?.agent?.dispose?.() resolves undefined),
+	// and a wedged pi-acp would leave pi idling forever. Once upstream disposes
+	// its child reliably, drop the group signaling.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -178,7 +176,7 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 		return nil, fmt.Errorf("starting harness: %w", err)
 	}
 
-	s := &userSession{contactID: contactID, cmd: cmd}
+	s := &userSession{cmd: cmd}
 	conn := acp.NewClientSideConnection(&acpClient{sess: s}, stdin, stdout)
 	s.conn = conn
 
@@ -190,18 +188,20 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
-	if prev := m.store.get(contactID); prev != "" && init.AgentCapabilities.LoadSession {
-		_, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
-			SessionId:  acp.SessionId(prev),
-			Cwd:        cwd,
-			McpServers: []acp.McpServer{},
-		})
-		if err == nil {
-			s.sessionID = acp.SessionId(prev)
-			m.watch(contactID, s)
-			return s, nil
+	if init.AgentCapabilities.LoadSession {
+		if prev := latestSession(ctx, conn, cwd); prev != "" {
+			_, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
+				SessionId:  prev,
+				Cwd:        cwd,
+				McpServers: []acp.McpServer{},
+			})
+			if err == nil {
+				s.sessionID = prev
+				m.watch(contactID, s)
+				return s, nil
+			}
+			log.Printf("contact %d: session/load %q failed, starting fresh: %v", contactID, prev, err)
 		}
-		log.Printf("contact %d: session/load %q failed, starting fresh: %v", contactID, prev, err)
 	}
 
 	resp, err := conn.NewSession(ctx, acp.NewSessionRequest{
@@ -213,9 +213,31 @@ func (m *manager) spawn(ctx context.Context, contactID int64) (*userSession, err
 		return nil, fmt.Errorf("session/new: %w", err)
 	}
 	s.sessionID = resp.SessionId
-	m.store.put(contactID, string(resp.SessionId))
 	m.watch(contactID, s)
 	return s, nil
+}
+
+// latestSession returns the most recently updated session the agent lists for
+// cwd, or "" if it lists none or doesn't support session/list.
+func latestSession(ctx context.Context, conn *acp.ClientSideConnection, cwd string) acp.SessionId {
+	var newest acp.SessionInfo
+	var cursor *string
+	for {
+		resp, err := conn.ListSessions(ctx, acp.ListSessionsRequest{Cwd: &cwd, Cursor: cursor})
+		if err != nil {
+			return ""
+		}
+		for _, sess := range resp.Sessions {
+			if newest.UpdatedAt == nil ||
+				(sess.UpdatedAt != nil && *sess.UpdatedAt > *newest.UpdatedAt) {
+				newest = sess
+			}
+		}
+		if resp.NextCursor == nil {
+			return newest.SessionId
+		}
+		cursor = resp.NextCursor
+	}
 }
 
 // seedContactDir symlinks the template's entries into the contact dir so the
@@ -262,9 +284,13 @@ func (m *manager) watch(contactID int64, s *userSession) {
 	}()
 }
 
+// shutdown gracefully stops the harness by SIGTERM-ing its whole process
+// group. pi's rpc-mode SIGTERM handler runs its shutdown (persisting the
+// session and firing session_shutdown hooks), and pi-acp disposes its child
+// and exits; the group signal reaches pi even if pi-acp is wedged.
 func (s *userSession) shutdown() {
 	if s.cmd.Process != nil {
-		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGTERM)
 	}
 	s.wait()
 }
@@ -273,16 +299,12 @@ func (s *userSession) wait() {
 	s.waitOnce.Do(func() { s.cmd.Wait() })
 }
 
-// promptTurnTimeout bounds how long we wait on the harness to resolve any
-// turn before giving up on it.
-const promptTurnTimeout = 30 * time.Minute
-
 var errHarnessGone = errors.New("harness died mid-prompt")
 
 // prompt runs one turn. If a turn is already streaming, it steers: cancels the
 // active turn, then queues the new prompt (prompt turns are serialized by mu).
-// A prompt that was queued behind a harness recycle (record-only turn) finds
-// its session dead; retry once with a freshly spawned harness.
+// A prompt that was queued behind a harness recycle finds its session dead;
+// retry once with a freshly spawned harness.
 func (m *manager) prompt(ctx context.Context, contactID int64, blocks []acp.ContentBlock, deliver func(string) error) error {
 	err := m.promptOnce(ctx, contactID, blocks, deliver)
 	if errors.Is(err, errHarnessGone) {
@@ -298,7 +320,7 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, promptTurnTimeout)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	s.turnMu.Lock()
@@ -319,6 +341,9 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 		// the prompt itself never resolves (pi runs extension commands without
 		// an agent loop, so pi-acp never sees agent_end — upstream bug). End
 		// the turn at the ack.
+		// FUTURE: once https://github.com/svkozak/pi-acp/issues/84 is fixed
+		// (command-only prompts resolve their turn), drop this ack wait and
+		// let the Prompt call resolve normally.
 		t.onFirstChunk = cancel
 	}
 	s.turnMu.Lock()
@@ -336,66 +361,65 @@ func (m *manager) promptOnce(ctx context.Context, contactID int64, blocks []acp.
 
 	if err != nil {
 		t.finish(false)
-		// A finished record-only turn recycles the harness: the recorded
-		// message only applies on a session rebuild, so kill the harness and
-		// let the next message respawn it with session/load.
+		// A record-only turn never resolves cleanly (no agent loop), so a
+		// cancelled ctx here is its expected end (the ack fired), not a failure.
 		if deliver == nil && ctx.Err() != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				log.Printf("contact %d: record-only turn got no ack, recycling harness anyway", contactID)
-			}
-			s.shutdown()
+			m.terminate(contactID, s)
 			return nil
 		}
 		select {
 		case <-s.conn.Done():
-			m.mu.Lock()
-			if m.users[contactID] == s {
-				delete(m.users, contactID)
-			}
-			m.mu.Unlock()
+			m.terminate(contactID, s)
 			return errHarnessGone
 		default:
 		}
+		m.terminate(contactID, s)
 		return fmt.Errorf("prompt: %w", err)
 	}
 	t.finish(resp.StopReason != acp.StopReasonCancelled)
-	if deliver == nil {
-		s.shutdown()
+	// A cancelled turn means a steering prompt is already queued on s.mu; keep
+	// the harness alive so it lands in the live session instead of paying a
+	// respawn. The batch's final (uncancelled) turn terminates as usual.
+	if resp.StopReason == acp.StopReasonCancelled {
+		return nil
 	}
+	// Terminate after every completed turn: recorded messages only apply on
+	// the next session rebuild, and a fresh session/load restores them.
+	// FUTURE: server-driven termination exists because pi-acp neither notices a
+	// dead pi child nor recovers from it (session/prompt silently resolves as an
+	// empty end_turn — https://github.com/svkozak/pi-acp/issues/82). Once fixed
+	// upstream, revisit: the harness could end its own session after each
+	// generation (e.g. a project extension on agent_settled), making this a
+	// bare session/load-before-prompt with no kill.
+	m.terminate(contactID, s)
 	return nil
 }
 
-// sessionStore persists contactID→sessionID so harnesses that support
-// session/load can resume conversations across agent-server restarts.
-type sessionStore struct {
-	path string
-	mu   sync.Mutex
-	m    map[string]string
-}
-
-func newSessionStore(path string) *sessionStore {
-	s := &sessionStore{path: path, m: make(map[string]string)}
-	if b, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(b, &s.m); err != nil {
-			log.Printf("session store %s corrupt, ignoring: %v", path, err)
-		}
+// terminate gracefully shuts a harness down and deregisters it, so the next
+// message respawns cleanly instead of racing watch()'s async cleanup. Only the
+// still-registered pointer is removed, matching watch().
+func (m *manager) terminate(contactID int64, s *userSession) {
+	s.shutdown()
+	m.mu.Lock()
+	if m.users[contactID] == s {
+		delete(m.users, contactID)
 	}
-	return s
+	m.mu.Unlock()
 }
 
-func (s *sessionStore) get(contactID int64) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.m[fmt.Sprint(contactID)]
-}
-
-func (s *sessionStore) put(contactID int64, sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m[fmt.Sprint(contactID)] = sessionID
-	b, _ := json.Marshal(s.m)
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err == nil {
-		os.Rename(tmp, s.path)
+// stopAll gracefully shuts down every live harness. Used on server shutdown.
+func (m *manager) stopAll() {
+	m.mu.Lock()
+	sessions := make([]*userSession, 0, len(m.users))
+	for _, s := range m.users {
+		sessions = append(sessions, s)
 	}
+	m.users = make(map[int64]*userSession)
+	m.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, s := range sessions {
+		wg.Go(s.shutdown)
+	}
+	wg.Wait()
 }

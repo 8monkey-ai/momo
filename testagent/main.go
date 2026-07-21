@@ -1,27 +1,43 @@
 // Command testagent is a minimal ACP agent used by the agent-server tests.
-// It replies to every prompt with two paragraphs echoing the input, streamed
-// as separate agent_message_chunk updates. Prompts starting with a slash
-// command mimic pi-acp's record-only turns: one ack chunk, then the prompt
-// never resolves.
+// It mimics the pi-acp harness where the tests depend on its behavior: slash
+// prompts are record-only turns (one ack chunk, never resolves), and sessions
+// persist to a file in the cwd so session/list finds them across process
+// recycles.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 )
 
+const sessionsFile = ".testagent-sessions.json"
+
 type agent struct {
 	conn *acp.AgentSideConnection
+	mu   sync.Mutex
 }
 
-var _ acp.Agent = (*agent)(nil)
+var (
+	_ acp.Agent       = (*agent)(nil)
+	_ acp.AgentLoader = (*agent)(nil)
+)
 
 func (a *agent) Initialize(ctx context.Context, p acp.InitializeRequest) (acp.InitializeResponse, error) {
-	return acp.InitializeResponse{ProtocolVersion: acp.ProtocolVersionNumber}, nil
+	return acp.InitializeResponse{
+		ProtocolVersion: acp.ProtocolVersionNumber,
+		AgentCapabilities: acp.AgentCapabilities{
+			LoadSession:         true,
+			SessionCapabilities: acp.SessionCapabilities{List: &acp.SessionListCapabilities{}},
+		},
+	}, nil
 }
 
 func (a *agent) Authenticate(ctx context.Context, p acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
@@ -37,7 +53,13 @@ func (a *agent) Cancel(ctx context.Context, p acp.CancelNotification) error {
 }
 
 func (a *agent) NewSession(ctx context.Context, p acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	return acp.NewSessionResponse{SessionId: "test-session"}, nil
+	id := acp.SessionId(fmt.Sprintf("test-session-%d", time.Now().UnixNano()))
+	a.putSession(sessionRecord{
+		SessionId: string(id),
+		Cwd:       p.Cwd,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	return acp.NewSessionResponse{SessionId: id}, nil
 }
 
 func (a *agent) CloseSession(ctx context.Context, p acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
@@ -45,7 +67,27 @@ func (a *agent) CloseSession(ctx context.Context, p acp.CloseSessionRequest) (ac
 }
 
 func (a *agent) ListSessions(ctx context.Context, p acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
-	return acp.ListSessionsResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionList)
+	sessions := []acp.SessionInfo{}
+	for _, r := range a.loadSessions() {
+		if p.Cwd != nil && r.Cwd != *p.Cwd {
+			continue
+		}
+		sessions = append(sessions, acp.SessionInfo{
+			SessionId: acp.SessionId(r.SessionId),
+			Cwd:       r.Cwd,
+			UpdatedAt: &r.UpdatedAt,
+		})
+	}
+	return acp.ListSessionsResponse{Sessions: sessions}, nil
+}
+
+func (a *agent) LoadSession(ctx context.Context, p acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	for _, r := range a.loadSessions() {
+		if r.SessionId == string(p.SessionId) {
+			return acp.LoadSessionResponse{}, nil
+		}
+	}
+	return acp.LoadSessionResponse{}, fmt.Errorf("unknown session %q", p.SessionId)
 }
 
 func (a *agent) ResumeSession(ctx context.Context, p acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
@@ -91,6 +133,39 @@ func (a *agent) Prompt(ctx context.Context, p acp.PromptRequest) (acp.PromptResp
 		}
 	}
 	return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+}
+
+type sessionRecord struct {
+	SessionId string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// sessionsPath lives in the session cwd, which is the process cwd here.
+func sessionsPath() string {
+	wd, _ := os.Getwd()
+	return filepath.Join(wd, sessionsFile)
+}
+
+func readSessions() []sessionRecord {
+	var recs []sessionRecord
+	if b, err := os.ReadFile(sessionsPath()); err == nil {
+		json.Unmarshal(b, &recs)
+	}
+	return recs
+}
+
+func (a *agent) loadSessions() []sessionRecord {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return readSessions()
+}
+
+func (a *agent) putSession(rec sessionRecord) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	b, _ := json.Marshal(append(readSessions(), rec))
+	os.WriteFile(sessionsPath(), b, 0o644)
 }
 
 func main() {

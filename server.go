@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
 )
@@ -134,9 +133,9 @@ func (s *server) record(ev webhookEvent, command string) {
 	if ev.Message.Message.Type != "text" || ev.Message.Message.Text == "" {
 		return
 	}
-	// Single line: ACP adapters split the slash command from its args at the
-	// first space, so the message must follow on the same line.
-	prompt := command + " " + strings.ReplaceAll(ev.Message.Message.Text, "\n", " ")
+	// pi-acp splits the command from its args at the first literal space; the
+	// explicit space after the command keeps multi-line text intact as args.
+	prompt := command + " " + ev.Message.Message.Text
 	err := s.mgr.prompt(context.Background(), ev.Contact.ID, []acp.ContentBlock{acp.TextBlock(prompt)}, nil)
 	if err != nil {
 		log.Printf("contact %d: record %s: %v", ev.Contact.ID, command, err)

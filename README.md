@@ -9,9 +9,9 @@ respond.io ◀──REST API ─────  (this binary) ◀── session/up
 
 ## How it works
 
-- **One harness subprocess and one ACP session per contact**, spawned on first message. The respond.io contact ID is the routing key; the harness issues the session ID.
+- **One harness subprocess per contact turn**, spawned on demand and gracefully terminated after each turn completes. The respond.io contact ID is the routing key; the harness issues the session ID. The next message respawns the harness and resumes the prior conversation, so history restore and recorded messages (which only apply on a session rebuild) always take effect.
 - **Per-contact working directory** (`DATA_DIR/<contactId>`), passed as the session `cwd`. This is how the harness identifies the user and where it persists their chat history — returning users continue their previous conversation. With `CONTACT_TEMPLATE` set, each contact dir is seeded with symlinks to a project template so the harness picks up its config (system prompt, packages, skills).
-- **Session resume**: the contact→session mapping is persisted in `DATA_DIR/sessions.json`; if the harness supports `session/load`, conversations survive agent-server restarts.
+- **Stateless session discovery**: the server keeps no persistent state. On spawn it asks the harness for existing sessions via `session/list` (filtered by the contact's `cwd`), and if the harness supports `session/load` it resumes the most recently updated one; otherwise it starts fresh with `session/new`.
 - **Steering**: a message arriving while a turn is streaming cancels the active turn (`session/cancel`) and prompts with the new message.
 - **Human-paced delivery**: streamed output is split on paragraph boundaries (`\n\n`) and each paragraph is sent as a separate respond.io message, delayed proportionally to its length.
 - **Attachments**: images and audio (voice messages) are downloaded and sent to the agent as inline content blocks; other files are saved into the contact's working directory and referenced with a resource link.
@@ -32,7 +32,7 @@ Register these in respond.io (Settings → Integrations → Webhook), pointing b
 | `RESPOND_INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
 | `RESPOND_OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
 | `PORT` | `8080` | HTTP listen port |
-| `DATA_DIR` | `./data` | Per-contact working dirs and session store |
+| `DATA_DIR` | `./data` | Per-contact working dirs |
 | `CONTACT_TEMPLATE` | — (off) | Directory whose entries are symlinked into each contact's cwd (e.g. a [gato](https://github.com/8monkey-ai/gato) checkout, so the harness finds its `.pi/` project config) |
 | `TYPING_DELAY_MS_PER_WORD` | `1000` | Typing simulation; delay = words × this |
 | `RESPOND_AI_ASSIGNEE_ID` | — (off) | respond.io user id the AI replies for; conversations assigned to anyone else are record-only |
