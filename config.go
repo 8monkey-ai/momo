@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"os"
 
 	"github.com/8monkey-ai/agent-server/channel/respondio"
@@ -13,14 +14,7 @@ type config struct {
 
 func loadConfig() config {
 	return config{
-		port:      envOr("PORT", "8080"),
+		port:      cmp.Or(os.Getenv("PORT"), "8080"),
 		respondio: respondio.ConfigFromEnv(),
 	}
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
