@@ -11,7 +11,7 @@ func TestWebhookRouted(t *testing.T) {
 	ts := httptest.NewServer((&server{}).routes())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/webhook", "application/json", strings.NewReader(`{"event_type":"message.received"}`))
+	resp, err := http.Post(ts.URL+"/webhook/respondio", "application/json", strings.NewReader(`{"event_type":"message.received"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
