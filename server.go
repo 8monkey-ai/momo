@@ -14,7 +14,9 @@ type server struct {
 
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST /webhook/respondio", respondio.Webhook(s.cfg.respondio, s))
+	if s.cfg.respondio.Configured() {
+		mux.Handle("POST /webhook/respondio", respondio.Webhook(s.cfg.respondio, s))
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

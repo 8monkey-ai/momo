@@ -11,15 +11,15 @@ Register two webhooks in respond.io (Settings → Integrations → Webhook), poi
 - **New Incoming Message** (`message.received`) — a contact messaged the workspace.
 - **New Outgoing Message** (`message.sent`) — an operator (or the agent itself) replied.
 
-Events are acked immediately and processed asynchronously.
+Events are acked immediately and processed asynchronously. The route is mounted only when at least one signing key is set; with no respond.io config the channel is off.
 
 ## Configuration
 
 | Env var | Default | Description |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP listen port |
-| `RESPOND_INCOMING_SIGNING_KEY` | — (off) | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
-| `RESPOND_OUTGOING_SIGNING_KEY` | — (off) | Signing key of the New Outgoing Message webhook |
+| `RESPOND_INCOMING_SIGNING_KEY` | — | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
+| `RESPOND_OUTGOING_SIGNING_KEY` | — | Signing key of the New Outgoing Message webhook |
 
 ## Run
 

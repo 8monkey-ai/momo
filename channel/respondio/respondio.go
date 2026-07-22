@@ -28,6 +28,10 @@ func ConfigFromEnv() Config {
 	}
 }
 
+func (c Config) Configured() bool {
+	return c != Config{}
+}
+
 // Webhook returns the handler for respond.io's webhook callbacks. Events are
 // acked immediately and handed to h async.
 func Webhook(cfg Config, h channel.Handler) http.Handler {
