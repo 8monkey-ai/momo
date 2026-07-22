@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8monkey-ai/agent-server/channel"
+	"github.com/8monkey-ai/momo/channel"
 )
 
 type nopHandler struct{}

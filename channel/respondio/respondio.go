@@ -13,7 +13,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/8monkey-ai/agent-server/channel"
+	"github.com/8monkey-ai/momo/channel"
 )
 
 type Config struct {

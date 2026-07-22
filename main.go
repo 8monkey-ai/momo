@@ -18,7 +18,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("🐒 agent-server listening on :%s", cfg.port)
+		log.Printf("🐒 momo listening on :%s", cfg.port)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8monkey-ai/agent-server/channel/respondio"
+	"github.com/8monkey-ai/momo/channel/respondio"
 )
 
 func TestWebhookRoutedWhenConfigured(t *testing.T) {

@@ -1,4 +1,4 @@
-# agent-server
+# momo
 
 Drives one AI agent per contact across messaging channels: incoming messages prompt the contact's agent, and its replies are sent back through the channel the contact wrote on.
 
