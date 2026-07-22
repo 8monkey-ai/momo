@@ -77,21 +77,15 @@ func Webhook(cfg Config, h channel.Handler) http.Handler {
 // trimmed to the fields we use.
 
 type webhookEvent struct {
-	EventType string       `json:"event_type"`
-	Contact   contact      `json:"contact"`
-	Message   eventMessage `json:"message"`
-}
-
-type contact struct {
-	ID int64 `json:"id"`
-}
-
-type eventMessage struct {
-	Message messageContent `json:"message"`
-}
-
-type messageContent struct {
-	Text string `json:"text"`
+	EventType string `json:"event_type"`
+	Contact   struct {
+		ID int64 `json:"id"`
+	} `json:"contact"`
+	Message struct {
+		Message struct {
+			Text string `json:"text"`
+		} `json:"message"`
+	} `json:"message"`
 }
 
 // respond.io signs webhooks with base64 HMAC-SHA256 of the raw body.
