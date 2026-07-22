@@ -1,18 +1,20 @@
 package main
 
-import "os"
+import (
+	"os"
+
+	"github.com/8monkey-ai/agent-server/channel/respondio"
+)
 
 type config struct {
-	port               string
-	incomingSigningKey string
-	outgoingSigningKey string
+	port      string
+	respondio respondio.Config
 }
 
 func loadConfig() config {
 	return config{
-		port:               envOr("PORT", "8080"),
-		incomingSigningKey: os.Getenv("RESPOND_INCOMING_SIGNING_KEY"),
-		outgoingSigningKey: os.Getenv("RESPOND_OUTGOING_SIGNING_KEY"),
+		port:      envOr("PORT", "8080"),
+		respondio: respondio.ConfigFromEnv(),
 	}
 }
 

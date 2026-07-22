@@ -11,7 +11,7 @@ import (
 
 func main() {
 	cfg := loadConfig()
-	srv := newServer(cfg)
+	srv := &server{cfg: cfg}
 	httpSrv := &http.Server{Addr: ":" + cfg.port, Handler: srv.routes()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
