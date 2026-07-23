@@ -7,11 +7,19 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+
+	"github.com/8monkey-ai/momo/channel"
 )
 
 func main() {
 	cfg := loadConfig()
-	srv := &server{cfg: cfg}
+
+	var channels []channel.WebhookReceiver
+	if cfg.respondio.Configured() {
+		channels = append(channels, cfg.respondio)
+	}
+
+	srv := &server{channels: channels}
 	httpSrv := &http.Server{Addr: ":" + cfg.port, Handler: srv.routes()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

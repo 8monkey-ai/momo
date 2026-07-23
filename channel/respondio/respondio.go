@@ -32,9 +32,10 @@ func (c Config) Configured() bool {
 	return c != Config{}
 }
 
-// Webhook returns the handler for respond.io's webhook callbacks. Events are
-// acked immediately and handed to h async.
-func Webhook(cfg Config, h channel.Handler) http.Handler {
+func (Config) Name() string { return "respondio" }
+
+// Webhook returns a handler that acks events immediately and hands them to h async.
+func (c Config) Webhook(h channel.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -51,9 +52,9 @@ func Webhook(cfg Config, h channel.Handler) http.Handler {
 		var handle func(channel.Message)
 		switch ev.EventType {
 		case "message.received":
-			key, handle = cfg.IncomingSigningKey, h.Incoming
+			key, handle = c.IncomingSigningKey, h.Incoming
 		case "message.sent":
-			key, handle = cfg.OutgoingSigningKey, h.Outgoing
+			key, handle = c.OutgoingSigningKey, h.Outgoing
 		}
 		if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 			log.Printf("rejected %q webhook: invalid signature", ev.EventType)
@@ -88,7 +89,6 @@ type webhookEvent struct {
 	} `json:"message"`
 }
 
-// respond.io signs webhooks with base64 HMAC-SHA256 of the raw body.
 func validSignature(body []byte, signature, key string) bool {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write(body)
