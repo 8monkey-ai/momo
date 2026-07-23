@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
+	configPath := flag.String("config", "momo.conf", "path to the config file")
 	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)
@@ -24,15 +24,11 @@ func main() {
 	}
 
 	var channels []channel.WebhookReceiver
-	if node, ok := cfg.Channels["respondio"]; ok {
-		var c struct {
-			IncomingSigningKey string `yaml:"incoming_signing_key"`
-			OutgoingSigningKey string `yaml:"outgoing_signing_key"`
-		}
-		if err := node.Decode(&c); err != nil {
-			log.Fatalf("config channels.respondio: %v", err)
-		}
-		channels = append(channels, respondio.New(respondio.Config(c)))
+	if s, ok := cfg.Channels["respondio"]; ok {
+		channels = append(channels, respondio.New(respondio.Config{
+			IncomingSigningKey: s.Key("incoming_signing_key").String(),
+			OutgoingSigningKey: s.Key("outgoing_signing_key").String(),
+		}))
 	}
 
 	srv := &server{channels: channels}

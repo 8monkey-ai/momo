@@ -27,8 +27,8 @@ go.work.sum
 # env file
 .env
 
-# Local config (holds signing keys); see config.example.yaml
-config.yaml
+# Local config (holds signing keys); see momo.example.conf
+momo.conf
 
 # Editor/IDE
 # .idea/

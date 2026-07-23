@@ -6,24 +6,24 @@ momo connects messaging channels to AI agents. Every contact gets their own agen
 
 ### 1. Run the server
 
-momo is configured with a YAML file (default `./config.yaml`, override with `-config <path>`):
+momo is configured with a config file (default `./momo.conf`, override with `-config <path>`):
 
 ```sh
-cp config.example.yaml config.yaml
-go run .            # or: go run . -config /etc/momo/config.yaml
+cp momo.example.conf momo.conf
+go run .            # or: go run . -config /etc/momo/momo.conf
 ```
 
-```yaml
-port: 8080          # HTTP listen port
-channels:
-  respondio:
-    incoming_signing_key: "..."
-    outgoing_signing_key: "..."
+```ini
+port = 8080         # HTTP listen port
+
+[channels.respondio]
+incoming_signing_key = ...
+outgoing_signing_key = ...
 ```
 
 ### 2. Connect a channel
 
-A channel is where contacts message from. Each channel is enabled by the presence of its section under `channels:` in the config; [respond.io](https://respond.io) (WhatsApp, Messenger, Telegram, …) is the first supported channel.
+A channel is where contacts message from. Each channel is enabled by the presence of its `[channels.<name>]` section in the config; [respond.io](https://respond.io) (WhatsApp, Messenger, Telegram, …) is the first supported channel.
 
 In respond.io, go to Settings → Integrations → Webhook and register two webhooks, both pointing at `https://<host>/webhook/respondio`:
 
