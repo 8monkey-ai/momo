@@ -1,33 +1,44 @@
 # momo
 
-Drives one AI agent per contact across messaging channels: incoming messages prompt the contact's agent, and its replies are sent back through the channel the contact wrote on.
+momo connects messaging channels to AI agents. Every contact gets their own agent: when a contact writes on a channel, momo prompts that contact's agent and sends the agent's replies back over the same channel — each conversation is a private, persistent one-on-one with its own agent.
 
-Channel implementations live under `channel/`; each translates its transport into the channel-neutral messages the core pipeline consumes. [respond.io](https://respond.io) is the first channel.
+## Setup
 
-## respond.io channel
+### 1. Run the server
 
-Register two webhooks in respond.io (Settings → Integrations → Webhook), pointing both at the same URL, `https://<host>/webhook/respondio` (the server dispatches on `event_type`). Each registered webhook has its own signing key; set them via `RESPOND_INCOMING_SIGNING_KEY` / `RESPOND_OUTGOING_SIGNING_KEY` and the server verifies the `X-Webhook-Signature` header (base64 HMAC-SHA256 of the raw body) per event:
-
-- **New Incoming Message** (`message.received`) — a contact messaged the workspace.
-- **New Outgoing Message** (`message.sent`) — an operator (or the agent itself) replied.
-
-Events are acked immediately and processed asynchronously. The route is mounted only when at least one signing key is set; with no respond.io config the channel is off.
-
-## Configuration
-
-| Env var | Default | Description |
-| --- | --- | --- |
-| `PORT` | `8080` | HTTP listen port |
-| `RESPOND_INCOMING_SIGNING_KEY` | — | Signing key of the New Incoming Message webhook; verifies `X-Webhook-Signature` |
-| `RESPOND_OUTGOING_SIGNING_KEY` | — | Signing key of the New Outgoing Message webhook |
-
-## Run
+momo is configured with a YAML file (default `./config.yaml`, override with `-config <path>`):
 
 ```sh
-go run .
+cp config.example.yaml config.yaml
+go run .            # or: go run . -config /etc/momo/config.yaml
 ```
 
-## Test
+```yaml
+port: 8080          # HTTP listen port
+channels:
+  respondio:
+    incoming_signing_key: "..."
+    outgoing_signing_key: "..."
+```
+
+### 2. Connect a channel
+
+A channel is where contacts message from. Each channel is enabled by the presence of its section under `channels:` in the config; [respond.io](https://respond.io) (WhatsApp, Messenger, Telegram, …) is the first supported channel.
+
+In respond.io, go to Settings → Integrations → Webhook and register two webhooks, both pointing at `https://<host>/webhook/respondio`:
+
+- **New Incoming Message** — fires when a contact messages the workspace.
+- **New Outgoing Message** — fires when an operator (or the agent itself) replies.
+
+Each registered webhook has its own signing key; copy them into `incoming_signing_key` and `outgoing_signing_key`. momo verifies every event's `X-Webhook-Signature` against the matching key and rejects mismatches.
+
+### 3. Connect an agent
+
+Not available yet: this build receives, verifies, and logs channel events. The agent harness — running an [ACP](https://agentclientprotocol.com) agent such as pi per contact — lands in follow-up PRs.
+
+## Development
+
+Channel implementations live under `channel/`; each translates its transport into the channel-neutral messages the core pipeline consumes.
 
 ```sh
 go test ./...
