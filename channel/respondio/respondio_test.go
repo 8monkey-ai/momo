@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,8 +22,8 @@ func TestWebhookAcceptsKnownEvents(t *testing.T) {
 	defer ts.Close()
 
 	for _, eventType := range []string{"message.received", "message.sent", "contact.updated"} {
-		body, _ := json.Marshal(map[string]any{"event_type": eventType})
-		resp, err := http.Post(ts.URL, "application/json", strings.NewReader(string(body)))
+		body := `{"event_type":"` + eventType + `"}`
+		resp, err := http.Post(ts.URL, "application/json", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
