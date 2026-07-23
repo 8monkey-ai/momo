@@ -22,12 +22,12 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// Incoming is a logging stub until the agent pipeline lands.
+// Logging stub until the agent pipeline lands.
 func (s *server) Incoming(msg channel.Message) {
 	log.Printf("contact %s: received message %q", msg.ContactID, msg.Text)
 }
 
-// Outgoing is a logging stub until the agent pipeline lands.
+// Logging stub until the agent pipeline lands.
 func (s *server) Outgoing(msg channel.Message) {
 	log.Printf("contact %s: sent message %q", msg.ContactID, msg.Text)
 }

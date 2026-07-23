@@ -21,9 +21,8 @@ type Handler interface {
 }
 
 // WebhookReceiver is a messaging channel whose transport pushes events via
-// HTTP callbacks. The returned handler is mounted at POST /webhook/<name>.
-// Channels with other transports (e.g. long polling, like a direct Telegram
-// bot) get their own receiver interface alongside this one.
+// HTTP callbacks. The returned handler is mounted at POST /webhook/<name>;
+// non-push transports (e.g. long polling) will get sibling interfaces.
 type WebhookReceiver interface {
 	// Name identifies the channel in URLs and logs, e.g. "respondio".
 	Name() string

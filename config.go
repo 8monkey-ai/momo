@@ -7,9 +7,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// config is the config.yaml schema. A channel is enabled by the presence of
-// its section under channels; each section is kept as raw YAML for the
-// channel's own config type to decode.
+// Channels stays raw YAML so the schema names no channel implementation;
+// main decodes each section into its channel's config type.
 type config struct {
 	Port     int                  `yaml:"port"`
 	Channels map[string]yaml.Node `yaml:"channels"`
