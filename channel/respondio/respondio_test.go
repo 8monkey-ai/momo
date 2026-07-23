@@ -18,18 +18,6 @@ type nopHandler struct{}
 func (nopHandler) Incoming(channel.Message) {}
 func (nopHandler) Outgoing(channel.Message) {}
 
-func incomingText(contactID int64, text string) []byte {
-	b, _ := json.Marshal(map[string]any{
-		"event_type": "message.received",
-		"contact":    map[string]any{"id": contactID},
-		"message": map[string]any{
-			"messageId": 42,
-			"message":   map[string]any{"type": "text", "text": text},
-		},
-	})
-	return b
-}
-
 func TestWebhookAcceptsKnownEvents(t *testing.T) {
 	ts := httptest.NewServer(New(Config{}).Webhook(nopHandler{}))
 	defer ts.Close()
@@ -62,7 +50,7 @@ func TestWebhookRejectsBadPayload(t *testing.T) {
 }
 
 func TestSignatureVerification(t *testing.T) {
-	body := incomingText(1, "hi")
+	body := []byte(`{"event_type":"message.received","contact":{"id":1},"message":{"message":{"type":"text","text":"hi"}}}`)
 	key := "test-signing-key"
 	ts := httptest.NewServer(New(Config{IncomingSigningKey: key}).Webhook(nopHandler{}))
 	defer ts.Close()
