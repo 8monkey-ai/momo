@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/8monkey-ai/momo/channel"
 	"github.com/8monkey-ai/momo/channel/respondio"
@@ -48,12 +47,5 @@ func main() {
 
 	<-ctx.Done()
 	log.Print("shutting down")
-
-	// Graceful shutdown with a deadline; agent harness processes will be
-	// terminated and waited on here too, once they exist.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
-	}
+	httpSrv.Close()
 }
