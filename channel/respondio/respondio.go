@@ -17,8 +17,8 @@ import (
 
 // Config holds the signing keys of the two webhooks registered in respond.io.
 type Config struct {
-	IncomingSigningKey string
-	OutgoingSigningKey string
+	IncomingSigningKey string `yaml:"incoming_signing_key"`
+	OutgoingSigningKey string `yaml:"outgoing_signing_key"`
 }
 
 type Channel struct {

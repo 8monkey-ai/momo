@@ -1,12 +1,12 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -15,25 +15,27 @@ import (
 )
 
 func main() {
-	port := cmp.Or(os.Getenv("PORT"), "8080")
+	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
+	flag.Parse()
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	var channels []channel.WebhookReceiver
-	respondioCfg := respondio.Config{
-		IncomingSigningKey: os.Getenv("RESPOND_INCOMING_SIGNING_KEY"),
-		OutgoingSigningKey: os.Getenv("RESPOND_OUTGOING_SIGNING_KEY"),
-	}
-	if respondioCfg != (respondio.Config{}) {
-		channels = append(channels, respondio.New(respondioCfg))
+	if cfg.Channels.Respondio != nil {
+		channels = append(channels, respondio.New(*cfg.Channels.Respondio))
 	}
 
 	srv := &server{channels: channels}
-	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.routes()}
+	httpSrv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.Port), Handler: srv.routes()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		log.Printf("🐒 momo listening on :%s", port)
+		log.Printf("🐒 momo listening on :%d", cfg.Port)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

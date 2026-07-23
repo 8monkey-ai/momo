@@ -1,0 +1,7 @@
+# Copy to config.yaml and fill in. A channel is enabled by the presence of
+# its section under channels.
+port: 8080
+channels:
+  respondio:
+    incoming_signing_key: ""
+    outgoing_signing_key: ""
