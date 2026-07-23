@@ -4,17 +4,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/8monkey-ai/momo/channel/respondio"
 	"gopkg.in/yaml.v3"
 )
 
 // config is the config.yaml schema. A channel is enabled by the presence of
-// its section under channels.
+// its section under channels; each section is kept as raw YAML for the
+// channel's own config type to decode.
 type config struct {
-	Port     int `yaml:"port"`
-	Channels struct {
-		Respondio *respondio.Config `yaml:"respondio"`
-	} `yaml:"channels"`
+	Port     int                  `yaml:"port"`
+	Channels map[string]yaml.Node `yaml:"channels"`
 }
 
 func loadConfig(path string) (config, error) {

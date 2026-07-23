@@ -24,8 +24,12 @@ func main() {
 	}
 
 	var channels []channel.WebhookReceiver
-	if cfg.Channels.Respondio != nil {
-		channels = append(channels, respondio.New(*cfg.Channels.Respondio))
+	if node, ok := cfg.Channels["respondio"]; ok {
+		var c respondio.Config
+		if err := node.Decode(&c); err != nil {
+			log.Fatalf("config channels.respondio: %v", err)
+		}
+		channels = append(channels, respondio.New(c))
 	}
 
 	srv := &server{channels: channels}
