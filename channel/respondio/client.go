@@ -12,7 +12,6 @@ import (
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-// SendText delivers a reply to a contact through the respond.io REST API.
 func (ch respondio) SendText(contactID, text string) error {
 	body, _ := json.Marshal(map[string]any{
 		"message": map[string]any{"type": "text", "text": text},

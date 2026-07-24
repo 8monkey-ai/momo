@@ -24,22 +24,19 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// conversations handles one channel's messages, replying through that
-// same channel.
+// conversations replies to each message through the channel it arrived on.
 type conversations struct {
 	channel channel.Channel
 }
 
-// Incoming will prompt the contact's agent and deliver its reply;
-// until the agent pipeline lands, it echoes the message back.
+// Echo stub until the agent pipeline lands.
 func (c *conversations) Incoming(msg channel.Message) {
 	if err := c.channel.SendText(msg.ContactID, "You said: "+msg.Text); err != nil {
 		log.Printf("contact %s: %v", msg.ContactID, err)
 	}
 }
 
-// Outgoing will record operator replies into the agent's context;
-// until that pipeline lands, it only logs.
+// Logging stub until the agent pipeline lands.
 func (c *conversations) Outgoing(msg channel.Message) {
 	log.Printf("contact %s: sent message %q", msg.ContactID, msg.Text)
 }

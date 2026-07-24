@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -52,8 +51,7 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-// fakeRespond captures messages the server sends back to respond.io,
-// recorded as "contactID: text" so tests pin the recipient too.
+// fakeRespond records sends as "contactID: text" so tests pin the recipient too.
 type fakeRespond struct {
 	mu       sync.Mutex
 	messages []string
@@ -74,35 +72,21 @@ func (f *fakeRespond) handler() http.Handler {
 	})
 }
 
-func (f *fakeRespond) wait(t *testing.T, n int) []string {
+func (f *fakeRespond) waitForMessage(t *testing.T) string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		f.mu.Lock()
-		if len(f.messages) >= n {
-			out := slices.Clone(f.messages)
+		if len(f.messages) > 0 {
+			out := f.messages[0]
 			f.mu.Unlock()
 			return out
 		}
 		f.mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	t.Fatalf("timed out waiting for %d messages, got %q", n, f.messages)
-	return nil
-}
-
-func incomingText(contactID int64, text string) string {
-	b, _ := json.Marshal(map[string]any{
-		"event_type": "message.received",
-		"contact":    map[string]any{"id": contactID},
-		"message": map[string]any{
-			"messageId": 42,
-			"message":   map[string]any{"type": "text", "text": text},
-		},
-	})
-	return string(b)
+	t.Fatal("timed out waiting for a message")
+	return ""
 }
 
 func TestEchoRoundTrip(t *testing.T) {
@@ -121,8 +105,9 @@ func TestEchoRoundTrip(t *testing.T) {
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
+	incoming := `{"event_type":"message.received","contact":{"id":7},"message":{"message":{"type":"text","text":"hello"}}}`
 	resp, err := http.Post(ts.URL+"/webhook/respondio", "application/json",
-		strings.NewReader(incomingText(7, "hello")))
+		strings.NewReader(incoming))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,8 +116,8 @@ func TestEchoRoundTrip(t *testing.T) {
 		t.Fatalf("webhook status %d", resp.StatusCode)
 	}
 
-	msgs := fake.wait(t, 1)
-	if msgs[0] != "7: You said: hello" {
-		t.Errorf("echoed message = %q, want %q", msgs[0], "7: You said: hello")
+	msg := fake.waitForMessage(t)
+	if msg != "7: You said: hello" {
+		t.Errorf("echoed message = %q, want %q", msg, "7: You said: hello")
 	}
 }
