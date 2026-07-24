@@ -104,5 +104,5 @@ To check the connection end to end, message your workspace from any linked chann
 
 ## Connecting an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo answers every message with an echo reply, which confirms your channel is wired up in both directions.
+*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact.
 
