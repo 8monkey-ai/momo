@@ -55,6 +55,7 @@ port = 8080         # HTTP listen port
 [channels.respondio]
 incoming_signing_key = ...
 outgoing_signing_key = ...
+api_token = ...
 ```
 
 | Setting | What it does |
@@ -62,7 +63,7 @@ outgoing_signing_key = ...
 | `port` | Port momo listens on for incoming webhooks. |
 | `[channels.<name>]` | Enables a channel. A channel is active if and only if its section is present. |
 
-Where the signing keys come from is covered in the channel setup below.
+Where the channel credentials come from is covered in the channel setup below.
 
 ## Connecting a channel
 
@@ -91,9 +92,17 @@ A channel is where your contacts reach you. Enable one by adding its `[channels.
    outgoing_signing_key = <key from the New Outgoing Message webhook>
    ```
 
-4. Restart momo. It now verifies the signature of every event and rejects anything that doesn't match — so keep the keys in your config in sync with respond.io if you ever regenerate them.
+4. To let momo reply, create a **Developer API** token (Settings → Integrations → Developer API) and add it too:
+
+   ```ini
+   api_token = <your Developer API access token>
+   ```
+
+5. Restart momo. It now verifies the signature of every event and rejects anything that doesn't match — so keep the keys in your config in sync with respond.io if you ever regenerate them.
+
+To check the connection end to end, message your workspace from any linked channel: momo replies with an echo of what you sent (`You said: ...`).
 
 ## Connecting an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo receives, verifies, and logs channel events.
+*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo answers every message with an echo reply, which confirms your channel is wired up in both directions.
 
