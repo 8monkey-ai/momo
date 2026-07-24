@@ -1,36 +1,49 @@
 # momo
 
-momo connects your messaging channels to AI agents. Every contact who writes to you gets their own private, persistent agent: when they send a message on WhatsApp, Messenger, Telegram, or any other connected channel, momo passes it to that contact's agent and delivers the agent's reply back over the same channel. Each conversation is a one-on-one with its own agent that remembers the contact across messages.
+momo connects your channels to AI agents. A channel is anywhere a contact reaches you — WhatsApp, Messenger, or Telegram through [respond.io](https://respond.io) today, with email and other kinds of channels to follow. Every contact gets their own private, persistent agent: momo passes each message to that contact's agent and delivers the reply back over the same channel. Each conversation is a one-on-one with an agent that remembers the contact across messages.
+
+## Install
+
+momo ships as a single static binary. Pick one:
+
+- **Prebuilt binary** *(WIP)*: download the binary for your platform from [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it in your PATH.
+
+- **Docker** *(WIP)*:
+
+  ```sh
+  docker pull 8monkey/momo
+  ```
+
+- **Build from source** (needs [Docker](https://docs.docker.com/get-docker/) or [Go](https://go.dev/dl/)):
+
+  ```sh
+  git clone https://github.com/8monkey-ai/momo && cd momo
+  docker build -t momo .        # or: go build -o momo .
+  ```
 
 ## Quick start
 
-You need [Go](https://go.dev/dl/) installed and a host reachable from the internet (channels deliver messages via webhooks).
+You need a host reachable from the internet (channels deliver messages via webhooks).
 
-1. **Create your config file:**
+1. **Create your config file** and fill in your channel credentials (see [Configuration](#configuration) below):
 
    ```sh
    cp momo.example.conf momo.conf
    ```
 
-2. **Fill in `momo.conf`** with your port and channel credentials (see [Configuration](#configuration) below).
-
-3. **Start the server:**
+2. **Start momo:**
 
    ```sh
-   go run .
+   docker run -d -p 8080:8080 -v ./momo.conf:/etc/momo/momo.conf momo
    ```
 
-   You should see:
+   Or with the binary: `momo -config momo.conf`.
+
+   The logs should show:
 
    ```
    🐒 momo listening on :8080
    ```
-
-To use a config file from another location, pass `-config`:
-
-```sh
-go run . -config /etc/momo/momo.conf
-```
 
 ## Configuration
 
@@ -53,7 +66,7 @@ Where the signing keys come from is covered in the channel setup below.
 
 ## Connecting a channel
 
-A channel is where your contacts message from. Enable one by adding its `[channels.<name>]` section to the config.
+A channel is where your contacts reach you. Enable one by adding its `[channels.<name>]` section to the config.
 
 ### respond.io
 
@@ -82,5 +95,5 @@ A channel is where your contacts message from. Enable one by adding its `[channe
 
 ## Connecting an agent
 
-The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo receives, verifies, and logs channel events.
+*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo receives, verifies, and logs channel events.
 
