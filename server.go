@@ -14,8 +14,8 @@ type server struct {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	for name, ch := range s.channels {
-		if wr, ok := ch.(channel.WebhookReceiver); ok {
-			mux.Handle("POST /webhook/"+name, wr.Webhook(s))
+		if wh, ok := ch.(channel.WebhookHandler); ok {
+			mux.Handle("POST /webhook/"+name, wh.Webhook(s))
 		}
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

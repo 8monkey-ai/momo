@@ -27,9 +27,9 @@ type Handler interface {
 // Methods land with the pipeline; until then it only marks the concept.
 type Channel interface{}
 
-// WebhookReceiver is the capability of channels whose transport pushes events
+// WebhookHandler is the capability of channels whose transport pushes events
 // via HTTP callbacks; the returned handler is mounted at POST /webhook/<name>.
-type WebhookReceiver interface {
+type WebhookHandler interface {
 	Webhook(Handler) http.Handler
 }
 
