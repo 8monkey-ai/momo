@@ -24,8 +24,12 @@ type Handler interface {
 }
 
 // Channel connects contacts on an external platform to the core pipeline.
-// Methods land with the pipeline; until then it only marks the concept.
-type Channel interface{}
+// Receiving is a per-transport capability (see WebhookHandler); sending is
+// universal — every channel can deliver a reply back to a contact.
+type Channel interface {
+	// SendText delivers a reply to a contact on this channel.
+	SendText(contactID, text string) error
+}
 
 // WebhookHandler is the capability of channels whose transport pushes events
 // via HTTP callbacks; the returned handler is mounted at POST /webhook/<name>.
