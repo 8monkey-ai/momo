@@ -18,7 +18,7 @@ func (nopHandler) Incoming(channel.Message) {}
 func (nopHandler) Outgoing(channel.Message) {}
 
 func TestWebhookAcceptsKnownEvents(t *testing.T) {
-	ts := httptest.NewServer(New(Config{}).Webhook(nopHandler{}))
+	ts := httptest.NewServer((&respondio{}).Webhook(nopHandler{}))
 	defer ts.Close()
 
 	for _, eventType := range []string{"message.received", "message.sent", "contact.updated"} {
@@ -35,7 +35,7 @@ func TestWebhookAcceptsKnownEvents(t *testing.T) {
 }
 
 func TestWebhookRejectsBadPayload(t *testing.T) {
-	ts := httptest.NewServer(New(Config{}).Webhook(nopHandler{}))
+	ts := httptest.NewServer((&respondio{}).Webhook(nopHandler{}))
 	defer ts.Close()
 
 	resp, err := http.Post(ts.URL, "application/json", strings.NewReader("not json"))
@@ -51,7 +51,7 @@ func TestWebhookRejectsBadPayload(t *testing.T) {
 func TestSignatureVerification(t *testing.T) {
 	body := []byte(`{"event_type":"message.received","contact":{"id":1},"message":{"message":{"type":"text","text":"hi"}}}`)
 	key := "test-signing-key"
-	ts := httptest.NewServer(New(Config{IncomingSigningKey: key}).Webhook(nopHandler{}))
+	ts := httptest.NewServer((&respondio{incomingSigningKey: key}).Webhook(nopHandler{}))
 	defer ts.Close()
 
 	post := func(sig string) int {

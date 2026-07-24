@@ -10,7 +10,6 @@ import (
 
 type fakeWebhookChannel struct{}
 
-func (fakeWebhookChannel) Name() string { return "fake" }
 func (fakeWebhookChannel) Webhook(channel.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -18,7 +17,7 @@ func (fakeWebhookChannel) Webhook(channel.Handler) http.Handler {
 }
 
 func TestWebhookRoutedPerChannel(t *testing.T) {
-	srv := &server{channels: []channel.WebhookReceiver{fakeWebhookChannel{}}}
+	srv := &server{channels: map[string]channel.Channel{"fake": fakeWebhookChannel{}}}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 

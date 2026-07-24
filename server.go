@@ -8,13 +8,15 @@ import (
 )
 
 type server struct {
-	channels []channel.WebhookReceiver
+	channels map[string]channel.Channel
 }
 
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
-	for _, ch := range s.channels {
-		mux.Handle("POST /webhook/"+ch.Name(), ch.Webhook(s))
+	for name, ch := range s.channels {
+		if wr, ok := ch.(channel.WebhookReceiver); ok {
+			mux.Handle("POST /webhook/"+name, wr.Webhook(s))
+		}
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -11,7 +11,7 @@ import (
 	"syscall"
 
 	"github.com/8monkey-ai/momo/channel"
-	"github.com/8monkey-ai/momo/channel/respondio"
+	_ "github.com/8monkey-ai/momo/channel/respondio"
 )
 
 func main() {
@@ -23,12 +23,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var channels []channel.WebhookReceiver
-	if s, ok := cfg.Channels["respondio"]; ok {
-		channels = append(channels, respondio.New(respondio.Config{
-			IncomingSigningKey: s.Key("incoming_signing_key").String(),
-			OutgoingSigningKey: s.Key("outgoing_signing_key").String(),
-		}))
+	channels := map[string]channel.Channel{}
+	for name, settings := range cfg.Channels {
+		ch, err := channel.New(name, settings)
+		if err != nil {
+			log.Fatal(err)
+		}
+		channels[name] = ch
 	}
 
 	srv := &server{channels: channels}

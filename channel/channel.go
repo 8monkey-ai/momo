@@ -1,8 +1,11 @@
 // Package channel defines the vocabulary shared between the core pipeline
-// and the messaging-channel implementations that feed it.
+// and the channel implementations that feed it.
 package channel
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 // Message is a chat message translated to channel-neutral form. ContactID is
 // opaque to the core; only the originating channel interprets it.
@@ -20,11 +23,29 @@ type Handler interface {
 	Outgoing(Message)
 }
 
-// WebhookReceiver is a messaging channel whose transport pushes events via
-// HTTP callbacks. The returned handler is mounted at POST /webhook/<name>;
-// non-push transports (e.g. long polling) will get sibling interfaces.
+// Channel connects contacts on an external platform to the core pipeline.
+// Methods land with the pipeline; until then it only marks the concept.
+type Channel interface{}
+
+// WebhookReceiver is the capability of channels whose transport pushes events
+// via HTTP callbacks; the returned handler is mounted at POST /webhook/<name>.
 type WebhookReceiver interface {
-	// Name identifies the channel in URLs and logs, e.g. "respondio".
-	Name() string
 	Webhook(Handler) http.Handler
+}
+
+var factories = map[string]func(settings map[string]string) Channel{}
+
+// Register makes a channel available under the given config-section name.
+// Implementations call it from init, so importing a channel package is what
+// makes it available.
+func Register(name string, factory func(settings map[string]string) Channel) {
+	factories[name] = factory
+}
+
+func New(name string, settings map[string]string) (Channel, error) {
+	f, ok := factories[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown channel %q", name)
+	}
+	return f(settings), nil
 }

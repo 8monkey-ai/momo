@@ -15,22 +15,21 @@ import (
 	"github.com/8monkey-ai/momo/channel"
 )
 
-// Config holds the signing keys of the two webhooks registered in respond.io.
-type Config struct {
-	IncomingSigningKey string
-	OutgoingSigningKey string
+func init() {
+	channel.Register("respondio", func(settings map[string]string) channel.Channel {
+		return &respondio{
+			incomingSigningKey: settings["incoming_signing_key"],
+			outgoingSigningKey: settings["outgoing_signing_key"],
+		}
+	})
 }
 
-type Channel struct {
-	cfg Config
+type respondio struct {
+	incomingSigningKey string
+	outgoingSigningKey string
 }
 
-func New(cfg Config) *Channel { return &Channel{cfg: cfg} }
-
-func (*Channel) Name() string { return "respondio" }
-
-// Webhook returns a handler that acks events immediately and hands them to h async.
-func (ch *Channel) Webhook(h channel.Handler) http.Handler {
+func (ch *respondio) Webhook(h channel.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -47,9 +46,9 @@ func (ch *Channel) Webhook(h channel.Handler) http.Handler {
 		var handle func(channel.Message)
 		switch ev.EventType {
 		case "message.received":
-			key, handle = ch.cfg.IncomingSigningKey, h.Incoming
+			key, handle = ch.incomingSigningKey, h.Incoming
 		case "message.sent":
-			key, handle = ch.cfg.OutgoingSigningKey, h.Outgoing
+			key, handle = ch.outgoingSigningKey, h.Outgoing
 		}
 		if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 			log.Printf("rejected %q webhook: invalid signature", ev.EventType)
