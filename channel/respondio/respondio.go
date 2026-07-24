@@ -17,19 +17,13 @@ import (
 
 func init() {
 	channel.Register("respondio", func(settings map[string]string) channel.Channel {
-		return &respondio{
-			incomingSigningKey: settings["incoming_signing_key"],
-			outgoingSigningKey: settings["outgoing_signing_key"],
-		}
+		return respondio(settings)
 	})
 }
 
-type respondio struct {
-	incomingSigningKey string
-	outgoingSigningKey string
-}
+type respondio map[string]string
 
-func (ch *respondio) Webhook(h channel.Handler) http.Handler {
+func (ch respondio) Webhook(h channel.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -46,9 +40,9 @@ func (ch *respondio) Webhook(h channel.Handler) http.Handler {
 		var handle func(channel.Message)
 		switch ev.EventType {
 		case "message.received":
-			key, handle = ch.incomingSigningKey, h.Incoming
+			key, handle = ch["incoming_signing_key"], h.Incoming
 		case "message.sent":
-			key, handle = ch.outgoingSigningKey, h.Outgoing
+			key, handle = ch["outgoing_signing_key"], h.Outgoing
 		}
 		if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 			log.Printf("rejected %q webhook: invalid signature", ev.EventType)
