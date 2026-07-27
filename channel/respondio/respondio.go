@@ -1,5 +1,4 @@
-// Package respondio implements the respond.io channel: it receives
-// respond.io webhooks and translates them into channel.Messages.
+// Package respondio implements the respond.io channel.
 package respondio
 
 import (
@@ -15,16 +14,22 @@ import (
 	"github.com/8monkey-ai/momo/channel"
 )
 
+const name = "respondio"
+
 func init() {
-	channel.Register("respondio", func(settings map[string]string) channel.Channel {
+	channel.Register(name, func(settings map[string]string) channel.Channel {
 		return respondio(settings)
 	})
 }
 
 type respondio map[string]string
 
-func (ch respondio) Webhook(h channel.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (ch respondio) Start(h channel.Handler, mux *http.ServeMux) {
+	mux.Handle("POST /webhook/"+name, ch.webhook(h))
+}
+
+func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, "bad payload", http.StatusBadRequest)
@@ -59,12 +64,11 @@ func (ch respondio) Webhook(h channel.Handler) http.Handler {
 			ContactID: strconv.FormatInt(ev.Contact.ID, 10),
 			Text:      ev.Message.Message.Text,
 		})
-	})
+	}
 }
 
-// Webhook payload shapes per https://developers.respond.io/docs/webhooks,
-// trimmed to the fields we use.
-
+// Payload shapes per https://developers.respond.io/docs/webhooks, trimmed to
+// the fields we use.
 type webhookEvent struct {
 	EventType string `json:"event_type"`
 	Contact   struct {

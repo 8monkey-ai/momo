@@ -8,15 +8,13 @@ import (
 )
 
 type server struct {
-	channels map[string]channel.Channel
+	channels []channel.Channel
 }
 
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
-	for name, ch := range s.channels {
-		if wh, ok := ch.(channel.WebhookHandler); ok {
-			mux.Handle("POST /webhook/"+name, wh.Webhook(s))
-		}
+	for _, ch := range s.channels {
+		ch.Start(s, mux)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -24,12 +22,10 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// Logging stub until the agent pipeline lands.
 func (s *server) Incoming(msg channel.Message) {
 	log.Printf("contact %s: received message %q", msg.ContactID, msg.Text)
 }
 
-// Logging stub until the agent pipeline lands.
 func (s *server) Outgoing(msg channel.Message) {
 	log.Printf("contact %s: sent message %q", msg.ContactID, msg.Text)
 }

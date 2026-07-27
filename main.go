@@ -23,13 +23,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	channels := map[string]channel.Channel{}
+	var channels []channel.Channel
 	for name, settings := range cfg.Channels {
 		ch, err := channel.New(name, settings)
 		if err != nil {
 			log.Fatal(err)
 		}
-		channels[name] = ch
+		channels = append(channels, ch)
 	}
 
 	srv := &server{channels: channels}

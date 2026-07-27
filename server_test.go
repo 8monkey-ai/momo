@@ -8,16 +8,16 @@ import (
 	"github.com/8monkey-ai/momo/channel"
 )
 
-type fakeWebhookChannel struct{}
+type fakeChannel struct{}
 
-func (fakeWebhookChannel) Webhook(channel.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func (fakeChannel) Start(_ channel.Handler, mux *http.ServeMux) {
+	mux.HandleFunc("POST /webhook/fake", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 }
 
-func TestWebhookRoutedPerChannel(t *testing.T) {
-	srv := &server{channels: map[string]channel.Channel{"fake": fakeWebhookChannel{}}}
+func TestChannelRegistersItsOwnRoutes(t *testing.T) {
+	srv := &server{channels: []channel.Channel{fakeChannel{}}}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
