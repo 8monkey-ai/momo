@@ -23,7 +23,9 @@ func init() {
 type respondio map[string]string
 
 func (ch respondio) Start(h channel.Handler, mux *http.ServeMux) {
-	mux.Handle("POST /respondio", ch.webhook(h))
+	const route = "POST /respondio"
+	mux.Handle(route, ch.webhook(h))
+	log.Printf("respondio: listening on %s", route)
 }
 
 func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {
