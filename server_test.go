@@ -11,7 +11,7 @@ import (
 type fakeChannel struct{}
 
 func (fakeChannel) Start(_ channel.Handler, mux *http.ServeMux) {
-	mux.HandleFunc("POST /webhook/fake", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /fake", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 }
@@ -21,7 +21,7 @@ func TestChannelRegistersItsOwnRoutes(t *testing.T) {
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/webhook/fake", "application/json", nil)
+	resp, err := http.Post(ts.URL+"/fake", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

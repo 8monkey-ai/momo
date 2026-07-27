@@ -14,10 +14,8 @@ import (
 	"github.com/8monkey-ai/momo/channel"
 )
 
-const name = "respondio"
-
 func init() {
-	channel.Register(name, func(settings map[string]string) channel.Channel {
+	channel.Register("respondio", func(settings map[string]string) channel.Channel {
 		return respondio(settings)
 	})
 }
@@ -25,7 +23,7 @@ func init() {
 type respondio map[string]string
 
 func (ch respondio) Start(h channel.Handler, mux *http.ServeMux) {
-	mux.Handle("POST /webhook/"+name, ch.webhook(h))
+	mux.Handle("POST /respondio", ch.webhook(h))
 }
 
 func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {

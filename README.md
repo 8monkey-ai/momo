@@ -64,6 +64,15 @@ outgoing_signing_key = ...
 
 Where the signing keys come from is covered in the channel setup below.
 
+## HTTP routes
+
+Each enabled channel registers its own routes at startup, so the paths momo serves depend on which channels you enable. momo itself serves only `GET /healthz`.
+
+| Route | Registered by | Purpose |
+|---|---|---|
+| `GET /healthz` | momo | Health check; returns 200 once the server is up. |
+| `POST /respondio` | `respondio` channel | Receives respond.io webhook events. |
+
 ## Connecting a channel
 
 A channel is where your contacts reach you. Enable one by adding its `[channels.<name>]` section to the config.
@@ -77,7 +86,7 @@ A channel is where your contacts reach you. Enable one by adding its `[channels.
 2. Register two webhooks, both pointing at your momo server:
 
    ```
-   https://<your-host>/webhook/respondio
+   https://<your-host>/respondio
    ```
 
    - **New Incoming Message** — fires when a contact messages your workspace.
