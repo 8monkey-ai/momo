@@ -27,6 +27,12 @@ go.work.sum
 # env file
 .env
 
+# Local config (holds signing keys); see momo.example.conf
+momo.conf
+
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude Code agent worktrees
+.claude/worktrees/
