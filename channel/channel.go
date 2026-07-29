@@ -24,7 +24,7 @@ type Handler interface {
 type Channel interface {
 	// Start registers HTTP-push channels' routes on mux; polling channels ignore it.
 	Start(h Handler, mux *http.ServeMux)
-	SendText(contactID, text string) error
+	Send(Message) error
 }
 
 var factories = map[string]func(settings map[string]string) Channel{}

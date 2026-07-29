@@ -14,7 +14,7 @@ import (
 
 type fakeChannel struct{}
 
-func (fakeChannel) SendText(string, string) error { return nil }
+func (fakeChannel) Send(channel.Message) error { return nil }
 
 func (fakeChannel) Start(_ channel.Handler, mux *http.ServeMux) {
 	mux.HandleFunc("POST /fake", func(w http.ResponseWriter, _ *http.Request) {

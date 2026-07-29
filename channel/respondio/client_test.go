@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/8monkey-ai/momo/channel"
 )
 
-func TestSendTextRequest(t *testing.T) {
+func TestSendRequest(t *testing.T) {
 	var got *http.Request
 	var gotBody []byte
 	ts := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -18,7 +20,7 @@ func TestSendTextRequest(t *testing.T) {
 	defer ts.Close()
 
 	ch := respondio{"api_token": "tok", "api_url": ts.URL}
-	if err := ch.SendText("7", "hello"); err != nil {
+	if err := ch.Send(channel.Message{ContactID: "7", Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -34,13 +36,13 @@ func TestSendTextRequest(t *testing.T) {
 	}
 }
 
-func TestSendTextAPIError(t *testing.T) {
+func TestSendAPIError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no such contact", http.StatusNotFound)
 	}))
 	defer ts.Close()
 
-	err := respondio{"api_url": ts.URL}.SendText("7", "hello")
+	err := respondio{"api_url": ts.URL}.Send(channel.Message{ContactID: "7", Text: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "no such contact") {
 		t.Errorf("err = %v, want API error mentioning response body", err)
 	}

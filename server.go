@@ -28,7 +28,8 @@ type conversations struct {
 }
 
 func (c *conversations) Incoming(msg channel.Message) {
-	if err := c.channel.SendText(msg.ContactID, "You said: "+msg.Text); err != nil {
+	reply := channel.Message{ContactID: msg.ContactID, Text: "You said: " + msg.Text}
+	if err := c.channel.Send(reply); err != nil {
 		log.Printf("contact %s: %v", msg.ContactID, err)
 	}
 }
