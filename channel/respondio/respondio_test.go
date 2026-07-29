@@ -14,8 +14,8 @@ import (
 
 type nopHandler struct{}
 
-func (nopHandler) Incoming(channel.Message) {}
-func (nopHandler) Outgoing(channel.Message) {}
+func (nopHandler) Incoming(channel.Message, channel.Reply) {}
+func (nopHandler) Outgoing(channel.Message)                {}
 
 func TestWebhookAcceptsKnownEvents(t *testing.T) {
 	ts := httptest.NewServer(respondio{}.webhook(nopHandler{}))

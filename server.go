@@ -14,7 +14,7 @@ type server struct {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	for _, ch := range s.channels {
-		ch.Start(&conversations{channel: ch}, mux)
+		ch.Start(s, mux)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -22,18 +22,12 @@ func (s *server) routes() http.Handler {
 	return mux
 }
 
-// conversations replies to each message through the channel it arrived on.
-type conversations struct {
-	channel channel.Channel
-}
-
-func (c *conversations) Incoming(msg channel.Message) {
-	reply := channel.Message{ContactID: msg.ContactID, Text: "You said: " + msg.Text}
-	if err := c.channel.Send(reply); err != nil {
+func (s *server) Incoming(msg channel.Message, reply channel.Reply) {
+	if err := reply(channel.Message{ContactID: msg.ContactID, Text: "You said: " + msg.Text}); err != nil {
 		log.Printf("contact %s: %v", msg.ContactID, err)
 	}
 }
 
-func (c *conversations) Outgoing(msg channel.Message) {
+func (s *server) Outgoing(msg channel.Message) {
 	log.Printf("contact %s: sent message %q", msg.ContactID, msg.Text)
 }

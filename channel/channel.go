@@ -14,17 +14,21 @@ type Message struct {
 	Text      string
 }
 
+// Reply delivers a message back to the contact it came from. Channels hand
+// one to the core, so routing a reply never leaves the channel that owns it.
+type Reply func(Message) error
+
 // Handler is the core pipeline as a channel sees it. Outgoing carries replies
-// sent by an operator or the agent itself, not just contact messages.
+// sent by an operator or the agent itself, not just contact messages, and gets
+// no Reply: answering one would feed the agent its own words.
 type Handler interface {
-	Incoming(Message)
+	Incoming(Message, Reply)
 	Outgoing(Message)
 }
 
 type Channel interface {
 	// Start registers HTTP-push channels' routes on mux; polling channels ignore it.
 	Start(h Handler, mux *http.ServeMux)
-	Send(Message) error
 }
 
 var factories = map[string]func(settings map[string]string) Channel{}

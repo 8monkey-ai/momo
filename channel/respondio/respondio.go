@@ -45,7 +45,8 @@ func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {
 		var handle func(channel.Message)
 		switch ev.EventType {
 		case "message.received":
-			key, handle = ch["incoming_signing_key"], h.Incoming
+			key = ch["incoming_signing_key"]
+			handle = func(msg channel.Message) { h.Incoming(msg, ch.Send) }
 		case "message.sent":
 			key, handle = ch["outgoing_signing_key"], h.Outgoing
 		}
