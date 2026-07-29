@@ -14,8 +14,7 @@ type Message struct {
 	Text      string
 }
 
-// Reply delivers a message back to the contact it came from. Channels hand
-// one to the core, so routing a reply never leaves the channel that owns it.
+// Reply sends a message back over the channel it arrived on.
 type Reply func(Message) error
 
 // Handler is the core pipeline as a channel sees it. Outgoing carries replies

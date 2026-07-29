@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -50,10 +49,7 @@ func TestHealthz(t *testing.T) {
 }
 
 // fakeRespond records sends as "contactID: text" so tests pin the recipient too.
-type fakeRespond struct {
-	mu       sync.Mutex
-	messages []string
-}
+type fakeRespond struct{ messages chan string }
 
 func (f *fakeRespond) handler() http.Handler {
 	return http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -64,31 +60,23 @@ func (f *fakeRespond) handler() http.Handler {
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		contactID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/contact/id:"), "/message")
-		f.mu.Lock()
-		f.messages = append(f.messages, contactID+": "+body.Message.Text)
-		f.mu.Unlock()
+		f.messages <- contactID + ": " + body.Message.Text
 	})
 }
 
 func (f *fakeRespond) waitForMessage(t *testing.T) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		f.mu.Lock()
-		if len(f.messages) > 0 {
-			out := f.messages[0]
-			f.mu.Unlock()
-			return out
-		}
-		f.mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case msg := <-f.messages:
+		return msg
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for a message")
+		return ""
 	}
-	t.Fatal("timed out waiting for a message")
-	return ""
 }
 
 func TestEchoRoundTrip(t *testing.T) {
-	fake := &fakeRespond{}
+	fake := &fakeRespond{messages: make(chan string, 1)}
 	respondSrv := httptest.NewServer(fake.handler())
 	defer respondSrv.Close()
 
