@@ -98,8 +98,6 @@ A channel is where your contacts reach you. Enable one by adding its `[channels.
 
 5. Restart momo. It now verifies the signature of every event and rejects anything that doesn't match — so keep the keys in your config in sync with respond.io if you ever regenerate them.
 
-To check the connection end to end, message your workspace from any linked channel: momo replies with an echo of what you sent (`You said: ...`).
-
 ## Connecting an agent
 
 *(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact.
