@@ -12,22 +12,22 @@ import (
 	"github.com/8monkey-ai/momo/channel"
 )
 
-type fakeWebhookChannel struct{}
+type fakeChannel struct{}
 
-func (fakeWebhookChannel) SendText(string, string) error { return nil }
+func (fakeChannel) SendText(string, string) error { return nil }
 
-func (fakeWebhookChannel) Webhook(channel.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func (fakeChannel) Start(_ channel.Handler, mux *http.ServeMux) {
+	mux.HandleFunc("POST /fake", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 }
 
-func TestWebhookRoutedPerChannel(t *testing.T) {
-	srv := &server{channels: map[string]channel.Channel{"fake": fakeWebhookChannel{}}}
+func TestChannelRegistersItsOwnRoutes(t *testing.T) {
+	srv := &server{channels: []channel.Channel{fakeChannel{}}}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/webhook/fake", "application/json", nil)
+	resp, err := http.Post(ts.URL+"/fake", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,12 +101,12 @@ func TestEchoRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &server{channels: map[string]channel.Channel{"respondio": ch}}
+	srv := &server{channels: []channel.Channel{ch}}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
 	incoming := `{"event_type":"message.received","contact":{"id":7},"message":{"message":{"type":"text","text":"hello"}}}`
-	resp, err := http.Post(ts.URL+"/webhook/respondio", "application/json",
+	resp, err := http.Post(ts.URL+"/respondio", "application/json",
 		strings.NewReader(incoming))
 	if err != nil {
 		t.Fatal(err)

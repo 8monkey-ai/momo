@@ -1,6 +1,10 @@
 # momo
 
-momo connects your channels to AI agents. A channel is anywhere a contact reaches you — WhatsApp, Messenger, or Telegram through [respond.io](https://respond.io) today, with email and other kinds of channels to follow. Every contact gets their own private, persistent agent: momo passes each message to that contact's agent and delivers the reply back over the same channel. Each conversation is a one-on-one with an agent that remembers the contact across messages.
+Momo Is a lightweight server for hosting and operating AI agents.
+
+It sits between clients and agent harnesses, handling sessions, routing, lifecycle, and multiple input protocols such as ACP, WhatsApp, Telegram and RespondIO, while letting each agent bring its own harness, tools, skills, and configuration.
+
+Think of it as a web server for AI agents: it provides the common server infrastructure so agents can focus on their actual work.
 
 ## Install
 
@@ -8,24 +12,16 @@ momo ships as a single static binary. Pick one:
 
 - **Prebuilt binary** *(WIP)*: download the binary for your platform from [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it in your PATH.
 
-- **Docker** *(WIP)*:
-
-  ```sh
-  docker pull 8monkey/momo
-  ```
-
-- **Build from source** (needs [Docker](https://docs.docker.com/get-docker/) or [Go](https://go.dev/dl/)):
+- **Build from source** (needs [Go](https://go.dev/dl/)):
 
   ```sh
   git clone https://github.com/8monkey-ai/momo && cd momo
-  docker build -t momo .        # or: go build -o momo .
+  go build -o momo .
   ```
 
 ## Quick start
 
-You need a host reachable from the internet (channels deliver messages via webhooks).
-
-1. **Create your config file** and fill in your channel credentials (see [Configuration](#configuration) below):
+1. **Create your config file** and configure your channels (see [Configuration](#configuration) below):
 
    ```sh
    cp momo.example.conf momo.conf
@@ -34,10 +30,8 @@ You need a host reachable from the internet (channels deliver messages via webho
 2. **Start momo:**
 
    ```sh
-   docker run -d -p 8080:8080 -v ./momo.conf:/etc/momo/momo.conf momo
+   momo -config momo.conf
    ```
-
-   Or with the binary: `momo -config momo.conf`.
 
    The logs should show:
 
@@ -65,6 +59,10 @@ api_token = ...
 
 Where the channel credentials come from is covered in the channel setup below.
 
+## HTTP routes
+
+Each enabled channel registers its own routes at startup, so the paths momo serves depend on which channels you enable.
+
 ## Connecting a channel
 
 A channel is where your contacts reach you. Enable one by adding its `[channels.<name>]` section to the config.
@@ -78,7 +76,7 @@ A channel is where your contacts reach you. Enable one by adding its `[channels.
 2. Register two webhooks, both pointing at your momo server:
 
    ```
-   https://<your-host>/webhook/respondio
+   https://<your-host>/respondio
    ```
 
    - **New Incoming Message** — fires when a contact messages your workspace.
