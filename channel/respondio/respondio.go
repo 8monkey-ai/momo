@@ -48,7 +48,8 @@ func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {
 			key = ch["incoming_signing_key"]
 			handle = func(msg channel.Message) { h.Incoming(msg, ch.Send) }
 		case "message.sent":
-			key, handle = ch["outgoing_signing_key"], h.Outgoing
+			key = ch["outgoing_signing_key"]
+			handle = h.Outgoing
 		}
 		if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 			log.Printf("rejected %q webhook: invalid signature", ev.EventType)

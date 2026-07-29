@@ -23,7 +23,11 @@ func (s *server) routes() http.Handler {
 }
 
 func (s *server) Incoming(msg channel.Message, reply channel.Reply) {
-	if err := reply(channel.Message{ContactID: msg.ContactID, Text: "You said: " + msg.Text}); err != nil {
+	echo := channel.Message{
+		ContactID: msg.ContactID,
+		Text:      "You said: " + msg.Text,
+	}
+	if err := reply(echo); err != nil {
 		log.Printf("contact %s: %v", msg.ContactID, err)
 	}
 }
