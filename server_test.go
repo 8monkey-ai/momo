@@ -52,15 +52,21 @@ func TestHealthz(t *testing.T) {
 type fakeRespond struct{ messages chan string }
 
 func (f *fakeRespond) handler() http.Handler {
-	return http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Message struct {
 				Text string `json:"text"`
 			} `json:"message"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad payload", http.StatusBadRequest)
+			return
+		}
 		contactID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/contact/id:"), "/message")
-		f.messages <- contactID + ": " + body.Message.Text
+		select {
+		case f.messages <- contactID + ": " + body.Message.Text:
+		default:
+		}
 	})
 }
 

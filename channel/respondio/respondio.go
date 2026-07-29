@@ -51,6 +51,7 @@ func (ch respondio) webhook(h channel.Handler) http.HandlerFunc {
 			key = ch["outgoing_signing_key"]
 			handle = h.Outgoing
 		}
+		// FUTURE: fail closed — a missing key currently skips verification.
 		if key != "" && !validSignature(body, r.Header.Get("X-Webhook-Signature"), key) {
 			log.Printf("rejected %q webhook: invalid signature", ev.EventType)
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
