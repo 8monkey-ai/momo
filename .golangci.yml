@@ -1,0 +1,50 @@
+version: "2"
+
+# Every rule here is enabled for a defect class it catches in this service, an
+# internet-facing server that holds webhook signing keys. Anything that only
+# enforces taste is left off on purpose.
+linters:
+  default: none
+  enable:
+    # An ignored error return is a failure momo never reports: an unwritten
+    # response, a shutdown that did not happen.
+    - errcheck
+    # Struct tags that do not match the JSON respond.io sends, printf argument
+    # mismatches, locks copied by value.
+    - govet
+    # Nil dereferences, conditions that can never hold, misused standard library
+    # calls, including the crypto ones.
+    - staticcheck
+    # A value assigned and never read means the value the code meant to use went
+    # missing.
+    - ineffassign
+    # Unused code drifts out of sync with the code that runs and misleads the
+    # next reader.
+    - unused
+    # Weak hashes, unbounded reads of request bodies, servers without timeouts,
+    # signing keys reaching the log: the defects that matter most here.
+    - gosec
+    # A function with many branches is where the signature check or the event
+    # dispatch quietly grows a path nobody tested.
+    - gocyclo
+    # Duplicated blocks mean one rule lives in two places and only one gets
+    # fixed.
+    - dupl
+
+  settings:
+    gocyclo:
+      min-complexity: 12
+    dupl:
+      threshold: 120
+
+  exclusions:
+    rules:
+      # Table-driven tests repeat by design, and test fixtures hold fake keys.
+      - path: _test\.go
+        linters:
+          - dupl
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
