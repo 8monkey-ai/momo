@@ -46,6 +46,12 @@ func parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
+	// Decode reads a single document, so anything after the first would apply to
+	// nothing; that is a mistake worth reporting rather than dropping.
+	var rest yaml.Node
+	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
+		return nil, errors.New("invalid configuration: unexpected content after the first YAML document")
+	}
 	cfg := &Config{Listen: f.Listen, Channels: map[string]channel.Decoder{}}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen

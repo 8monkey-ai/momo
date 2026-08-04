@@ -56,6 +56,18 @@ func TestMuxServesHealthAndChannelRoutes(t *testing.T) {
 	}
 }
 
+func TestMuxReportsAnUnusablePath(t *testing.T) {
+	// http.ServeMux panics on these, so a typo in the configuration file would
+	// take the process down instead of being reported.
+	for _, path := range []string{"", "/respondio/{", "/respond io"} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := buildMux([]channel.Instance{instance("stub", path)}, discard()); err == nil {
+				t.Fatalf("buildMux(%q) succeeded, want an error naming the path", path)
+			}
+		})
+	}
+}
+
 func TestMuxReportsAPathServedTwice(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

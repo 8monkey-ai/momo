@@ -47,6 +47,11 @@ To stop or restart momo, send it `SIGTERM` (or `Ctrl-C`). It stops accepting new
 finishes the ones already in progress, and then exits, so a restart or redeploy does not
 cut off a webhook delivery already under way.
 
+*(WIP)* Acting on a message happens after the response is sent, and that work is not yet
+waited for on shutdown: a message whose webhook was acknowledged in the same instant momo
+is stopped may go unlogged. Draining it lands with the agent harness, when the action
+becomes more than a log line.
+
 ### Health
 
 `GET /healthz` answers `200 ok` while momo is running. Point your uptime monitor at it.

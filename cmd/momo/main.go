@@ -74,12 +74,27 @@ func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, e
 				return nil, fmt.Errorf("channel %q: path %q is already served", in.Name, route.Path)
 			}
 			served[route.Path] = true
-			mux.Handle(route.Path, route.Handler)
+			if err := handle(mux, route); err != nil {
+				return nil, fmt.Errorf("channel %q: %w", in.Name, err)
+			}
 			paths = append(paths, route.Path)
 		}
 		log.Info("channel ready", "channel", in.Name, "paths", paths)
 	}
 	return mux, nil
+}
+
+// handle registers one route, turning the panic http.ServeMux raises on a path
+// it cannot parse into an error naming that path. Recovering leaves the pattern
+// grammar to net/http instead of restating it here.
+func handle(mux *http.ServeMux, route channel.Route) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("path %q cannot be served: %v", route.Path, r)
+		}
+	}()
+	mux.Handle(route.Path, route.Handler)
+	return nil
 }
 
 func serve(log *slog.Logger, srv *http.Server) error {

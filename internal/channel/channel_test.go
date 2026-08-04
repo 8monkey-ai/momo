@@ -21,7 +21,15 @@ type fixed struct {
 
 func (f fixed) Routes() []Route { return f.routes }
 
+func isolateFactories(t *testing.T) {
+	t.Helper()
+	saved := factories
+	factories = map[string]Factory{}
+	t.Cleanup(func() { factories = saved })
+}
+
 func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
+	isolateFactories(t)
 	Register("stub-b", stub("b"))
 	Register("stub-a", stub("a"))
 
@@ -41,6 +49,7 @@ func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
 }
 
 func TestBuildReportsWhichChannelFailed(t *testing.T) {
+	isolateFactories(t)
 	broken := errors.New("missing signing key")
 	Register("stub-broken", func(Decoder, core.Handler) (Channel, error) { return nil, broken })
 

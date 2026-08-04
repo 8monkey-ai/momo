@@ -81,6 +81,8 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 	}{
 		{name: "misspelled setting", body: "listten: \":9000\"\n"},
 		{name: "not yaml", body: "listen: \":9000\"\n  channels:\n"},
+		// Only the first document is used, so a second one would be dropped in silence.
+		{name: "second document", body: "listen: \":8080\"\n---\nlisten: \":9999\"\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parse([]byte(tc.body)); err == nil {
