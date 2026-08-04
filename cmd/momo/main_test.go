@@ -17,6 +17,8 @@ type fixed struct {
 
 func (f fixed) Routes() []channel.Route { return f.routes }
 
+func (f fixed) Close() {}
+
 func instance(name string, paths ...string) channel.Instance {
 	routes := make([]channel.Route, 0, len(paths))
 	for _, p := range paths {

@@ -21,6 +21,8 @@ type fixed struct {
 
 func (f fixed) Routes() []Route { return f.routes }
 
+func (f fixed) Close() {}
+
 func isolateFactories(t *testing.T) {
 	t.Helper()
 	saved := factories

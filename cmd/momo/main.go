@@ -55,7 +55,7 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-	})
+	}, instances)
 }
 
 func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, error) {
@@ -97,7 +97,7 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(log *slog.Logger, srv *http.Server) error {
+func serve(log *slog.Logger, srv *http.Server, instances []channel.Instance) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -112,6 +112,12 @@ func serve(log *slog.Logger, srv *http.Server) error {
 	}
 
 	log.Info("shutting down, waiting for in-flight requests")
+	// A response that never ends on its own — an event stream a channel is
+	// holding open — would keep Shutdown waiting for the whole timeout, so
+	// channels release theirs before the drain starts.
+	for _, in := range instances {
+		in.Channel.Close()
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdown)

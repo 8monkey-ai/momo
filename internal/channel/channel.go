@@ -22,6 +22,11 @@ type Route struct {
 // Channel is a configured channel, ready to be served.
 type Channel interface {
 	Routes() []Route
+	// Close releases what the channel holds beyond a single request — a
+	// long-lived response such as an event stream — so that a shutdown does not
+	// wait for it. It is called once, when momo starts shutting down, before
+	// in-flight requests are drained.
+	Close()
 }
 
 // Decoder fills v from the channel's block in the configuration file, leaving v
