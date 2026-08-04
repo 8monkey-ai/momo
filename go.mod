@@ -1,5 +1,5 @@
 module github.com/8monkey-ai/momo
 
-go 1.26.4
+go 1.26
 
-require gopkg.in/ini.v1 v1.67.3
+require gopkg.in/yaml.v3 v3.0.1

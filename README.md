@@ -1,97 +1,135 @@
 # momo
 
-Momo Is a lightweight server for hosting and operating AI agents.
+momo connects your messaging channels to AI agents. Contacts message your business on
+WhatsApp, Telegram or Facebook Messenger; momo receives every message, in both directions,
+and acts on it.
 
-It sits between clients and agent harnesses, handling sessions, routing, lifecycle, and multiple input protocols such as ACP, WhatsApp, Telegram and RespondIO, while letting each agent bring its own harness, tools, skills, and configuration.
-
-Think of it as a web server for AI agents: it provides the common server infrastructure so agents can focus on their actual work.
+You run momo the way you run nginx or Caddy: one binary, one configuration file, logs on
+stdout, restart to apply a change.
 
 ## Install
 
 momo ships as a single static binary. Pick one:
 
-- **Prebuilt binary** *(WIP)*: download the binary for your platform from [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it in your PATH.
+- **Prebuilt binary** *(WIP)*: download the binary for your platform from
+  [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it on your path.
 
-- **Build from source** (needs [Go](https://go.dev/dl/)):
+- **Build from source** (needs [Go](https://go.dev/dl/) 1.26 or newer):
 
-  ```sh
+  ```
   git clone https://github.com/8monkey-ai/momo && cd momo
-  go build -o momo .
+  go build -o momo ./cmd/momo
   ```
 
-## Quick start
+  Copy the binary somewhere on your path, for example `/usr/local/bin/momo`.
 
-1. **Create your config file** and configure your channels (see [Configuration](#configuration) below):
+## Start
 
-   ```sh
-   cp momo.example.conf momo.conf
-   ```
-
-2. **Start momo:**
-
-   ```sh
-   momo -config momo.conf
-   ```
-
-   The logs should show:
-
-   ```
-   🐒 momo listening on :8080
-   ```
-
-## Configuration
-
-momo reads a single config file (default `./momo.conf`):
-
-```ini
-port = 8080         # HTTP listen port
-
-[channels.respondio]
-incoming_signing_key = ...
-outgoing_signing_key = ...
+```
+momo -config /etc/momo/momo.yaml
 ```
 
-| Setting | What it does |
-|---|---|
-| `port` | Port momo listens on for incoming webhooks. |
-| `[channels.<name>]` | Enables a channel. A channel is active if and only if its section is present. |
+`-config` defaults to `/etc/momo/momo.yaml`, so with the file in that location `momo`
+alone is enough.
 
-Where the signing keys come from is covered in the channel setup below.
+momo writes its log to stdout. At startup it reports every channel it brought up and the
+HTTP paths that channel serves:
 
-## HTTP routes
+```
+level=INFO msg="channel ready" channel=respondio paths="[/respondio/received /respondio/sent]"
+level=INFO msg="🐒 momo listening" address=:8080 health=/healthz
+```
 
-Each enabled channel registers its own routes at startup, so the paths momo serves depend on which channels you enable.
+If the configuration file is missing, unreadable or incomplete, momo reports the reason and
+exits without serving.
 
-## Connecting a channel
+To stop or restart momo, send it `SIGTERM` (or `Ctrl-C`). It stops accepting new requests,
+finishes the ones already in progress, and then exits, so a restart or redeploy does not
+cut off a webhook delivery already under way.
 
-A channel is where your contacts reach you. Enable one by adding its `[channels.<name>]` section to the config.
+*(WIP)* Handling that outlives the response is drained as well, so no message momo has
+already acknowledged is lost to a restart. It lands with the agent harness.
 
-### respond.io
+### Health
 
-[respond.io](https://respond.io) aggregates WhatsApp, Facebook Messenger, Telegram, and more into one workspace, and is the first channel momo supports.
+`GET /healthz` answers `200 ok` while momo is running. Point your uptime monitor at it.
 
-1. In respond.io, go to **Settings → Integrations → Webhook**.
+## Configure
 
-2. Register two webhooks, both pointing at your momo server:
+Everything momo does is set in the configuration file. No change to momo requires a
+rebuild.
 
-   ```
-   https://<your-host>/respondio
-   ```
+```yaml
+# Address momo listens on. Default: ":8080"
+listen: ":8080"
 
-   - **New Incoming Message** — fires when a contact messages your workspace.
-   - **New Outgoing Message** — fires when a reply goes out (from an operator or the agent itself).
+channels:
+  respondio:
+    # Signing key of the webhook that fires on incoming messages. Required.
+    received_secret: "paste the message.received signing key"
+    # Signing key of the webhook that fires on outgoing messages. Required.
+    sent_secret: "paste the message.sent signing key"
+    # Paths momo serves the two webhooks on.
+    # Defaults: "/respondio/received" and "/respondio/sent"
+    received_path: "/respondio/received"
+    sent_path: "/respondio/sent"
+```
 
-3. respond.io shows a **signing key** for each webhook you register. Copy them into your config:
+Only the two signing keys are required. Every other setting has a default, so the shortest
+working file is:
 
-   ```ini
-   [channels.respondio]
-   incoming_signing_key = <key from the New Incoming Message webhook>
-   outgoing_signing_key = <key from the New Outgoing Message webhook>
-   ```
+```yaml
+channels:
+  respondio:
+    received_secret: "paste the message.received signing key"
+    sent_secret: "paste the message.sent signing key"
+```
 
-4. Restart momo. It now verifies the signature of every event and rejects anything that doesn't match — so keep the keys in your config in sync with respond.io if you ever regenerate them.
+Leave out the `respondio` block entirely and momo starts with no channel, serving only
+`/healthz`.
 
-## Connecting an agent
+The keys are secrets. Keep the file readable only by the user momo runs as:
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per contact — lands in follow-up releases. Until then, momo receives, verifies, and logs channel events.
+```
+chmod 600 /etc/momo/momo.yaml
+```
 
+Restart momo to apply any change to the file.
+
+## Connect respond.io
+
+momo must be reachable from the internet. Put it behind a reverse proxy that terminates
+TLS and forwards to momo's `listen` address: the webhook payloads carry contact messages,
+so the connection respond.io makes should be HTTPS.
+
+In respond.io, go to **Workspace Settings → Integrations → Webhooks** and click **Connect**
+twice, once for each webhook.
+
+**1. Incoming messages** — respond.io labels this event *New Incoming Message*, and sends
+it as `message.received`
+
+- URL: `https://your-domain.example/respondio/received`
+
+**2. Outgoing messages** — labelled *New Outgoing Message* and sent as `message.sent`;
+these are replies from the workspace, whether by a human operator or, later, by an agent
+
+- URL: `https://your-domain.example/respondio/sent`
+
+Each webhook gets **its own signing key**, shown by respond.io on the webhook's page when
+you create it. Copy the key from the incoming-message webhook into `received_secret` and
+the key from the outgoing-message webhook into `sent_secret`, then restart momo.
+
+momo verifies the `X-Webhook-Signature` header on every delivery and rejects a request
+whose signature does not match that webhook's key with `401`. If your log shows `401` for
+deliveries respond.io says it sent, the two keys are swapped or one was copied
+incompletely.
+
+Both webhooks may also deliver event types momo does not act on, such as contact updates.
+momo accepts and ignores them, so respond.io does not retry them and new event types
+respond.io adds later need no upgrade on your side.
+
+## Connect an agent
+
+*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
+contact — lands in a follow-up release. Until then, momo receives, verifies and logs
+channel events.

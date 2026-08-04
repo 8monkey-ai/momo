@@ -1,6 +1,6 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
+# Built binary
+/momo
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -17,9 +17,6 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
 # Go workspace file
 go.work
 go.work.sum
@@ -27,12 +24,9 @@ go.work.sum
 # env file
 .env
 
-# Local config (holds signing keys); see momo.example.conf
+# Local config (holds the signing keys)
+momo.yaml
 momo.conf
-
-# Editor/IDE
-# .idea/
-# .vscode/
 
 # Claude Code agent worktrees
 .claude/worktrees/
