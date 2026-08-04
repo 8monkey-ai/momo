@@ -24,6 +24,23 @@ type Channel interface {
 	Routes() []Route
 }
 
+// Stopper is a channel that holds something momo has to release before it waits
+// for in-flight requests: a response that never ends on its own, a goroutine, an
+// open socket. Stop must not block.
+type Stopper interface {
+	Stop()
+}
+
+// Stop releases what the built channels hold. Channels that hold nothing
+// implement no Stopper and are left alone.
+func Stop(instances []Instance) {
+	for _, in := range instances {
+		if s, ok := in.Channel.(Stopper); ok {
+			s.Stop()
+		}
+	}
+}
+
 // Decoder fills v from the channel's block in the configuration file, leaving v
 // untouched when the block is empty.
 type Decoder func(v any) error

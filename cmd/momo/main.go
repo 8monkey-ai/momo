@@ -49,7 +49,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	return serve(log, &http.Server{
+	return serve(log, instances, &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -97,7 +97,7 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(log *slog.Logger, srv *http.Server) error {
+func serve(log *slog.Logger, instances []channel.Instance, srv *http.Server) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -112,6 +112,9 @@ func serve(log *slog.Logger, srv *http.Server) error {
 	}
 
 	log.Info("shutting down, waiting for in-flight requests")
+	// Channels holding a response that never ends on its own release it here, so a
+	// connected client cannot hold the shutdown open to its timeout.
+	channel.Stop(instances)
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdown)

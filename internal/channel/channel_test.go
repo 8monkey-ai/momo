@@ -42,6 +42,22 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 	}
 }
 
+func TestStopReleasesOnlyTheChannelsThatHoldSomething(t *testing.T) {
+	stopping := &stoppable{}
+	// The plain channel implements no Stopper, so Stop must leave it alone.
+	Stop([]Instance{{Name: "plain", Channel: fixed{}}, {Name: "stopping", Channel: stopping}})
+	if !stopping.stopped {
+		t.Error("Stop did not reach the channel that implements Stopper")
+	}
+}
+
+type stoppable struct {
+	fixed
+	stopped bool
+}
+
+func (s *stoppable) Stop() { s.stopped = true }
+
 func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
 	if _, err := Build(map[string]Decoder{"telegran": noSettings}, nil); err == nil {
 		t.Fatal("Build succeeded, want an error naming the unknown channel")
