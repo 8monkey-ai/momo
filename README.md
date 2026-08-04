@@ -36,6 +36,7 @@ momo writes its log to stdout. At startup it reports every channel it brought up
 HTTP paths that channel serves:
 
 ```
+level=INFO msg="channel ready" channel=acp paths=[/acp]
 level=INFO msg="channel ready" channel=respondio paths="[/respondio/received /respondio/sent]"
 level=INFO msg="🐒 momo listening" address=:8080 health=/healthz
 ```
@@ -73,22 +74,30 @@ channels:
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
     sent_path: "/respondio/sent"
+
+  acp:
+    # Bearer token every request to the endpoint must present. Required.
+    token: "a long random string you generate"
+    # Path momo serves the ACP endpoint on. Default: "/acp"
+    path: "/acp"
 ```
 
-Only the two signing keys are required. Every other setting has a default, so the shortest
-working file is:
+Only the secrets are required. Every other setting has a default, so the shortest working
+file is:
 
 ```yaml
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
     sent_secret: "paste the message.sent signing key"
+  acp:
+    token: "a long random string you generate"
 ```
 
-Leave out the `respondio` block entirely and momo starts with no channel, serving only
-`/healthz`.
+Leave out a channel's block and momo does not serve it. Leave out both and momo starts with
+no channel, serving only `/healthz`.
 
-The keys are secrets. Keep the file readable only by the user momo runs as:
+The keys and the token are secrets. Keep the file readable only by the user momo runs as:
 
 ```
 chmod 600 /etc/momo/momo.yaml
@@ -127,6 +136,50 @@ incompletely.
 Both webhooks may also deliver event types momo does not act on, such as contact updates.
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
+
+## Connect an ACP client
+
+The `acp` channel lets a program talk to momo with
+[ACP](https://agentclientprotocol.com) over HTTP: whoever holds the token can open a
+connection, start a session and send prompts, and momo treats each prompt as a message from
+a contact. momo is the agent side of the protocol.
+
+Generate a token and put it in the `acp` block, for example with `openssl rand -hex 32`.
+There is no way to run the channel without one: momo refuses to start if `token` is empty.
+
+Hand whoever runs the client one URL — momo's address plus the configured path:
+
+```
+https://your-domain.example/acp
+```
+
+As with respond.io, put momo behind a reverse proxy that terminates TLS: prompts are
+contact messages, and the token travels with every request.
+
+The client must:
+
+1. Send `Authorization: Bearer <token>` on **every** request. Anything else is answered
+   `401`, including requests that carry a connection or session id.
+2. `POST` an `initialize` message. The answer carries a connection id, in the body and in
+   the `Acp-Connection-Id` header, and that header is required on every later request.
+3. `GET` the endpoint with `Accept: text/event-stream` and the connection id. This opens the
+   stream momo answers on. Open it **before** creating a session: momo does not hold back
+   messages for a client that is not listening, and an answer sent while the stream was
+   closed is lost.
+4. `POST` `session/new`. The answer arrives on the stream from step 3 and carries a session
+   id. Send it as `Acp-Session-Id`, alongside the connection id, on everything to do with
+   that session, and open a second stream for it the same way.
+5. `POST` `session/prompt` with the text. momo logs the message and answers on that
+   session's stream. One connection may hold several sessions, each its own contact.
+6. `DELETE` the endpoint with the connection id when finished. That releases the
+   connection's sessions and closes its streams.
+
+momo answers `method not found` to the rest of ACP: there is no agent behind it yet, so a
+prompt is received and logged, and nothing replies.
+
+Sessions live in memory only. Restarting momo loses every connection and session, and
+clients have to initialize again — momo closes the open streams as it shuts down rather
+than making the restart wait for them.
 
 ## Connect an agent
 

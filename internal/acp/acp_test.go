@@ -1,0 +1,519 @@
+package acp
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/8monkey-ai/momo/internal/channel"
+	"github.com/8monkey-ai/momo/internal/core"
+)
+
+const token = "operator-token"
+
+const initializeBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`
+
+type call struct {
+	direction string
+	message   core.Message
+}
+
+type capture struct {
+	calls chan call
+}
+
+func (c capture) Received(_ context.Context, m core.Message) {
+	c.calls <- call{direction: "received", message: m}
+}
+
+func (c capture) Sent(_ context.Context, m core.Message) {
+	c.calls <- call{direction: "sent", message: m}
+}
+
+func withToken(t string) channel.Decoder {
+	return func(v any) error {
+		v.(*settings).Token = t
+		return nil
+	}
+}
+
+type peer struct {
+	t     *testing.T
+	url   string
+	reg   *registry
+	calls chan call
+}
+
+func newChannel(t *testing.T) (channel.Channel, chan call) {
+	t.Helper()
+	calls := make(chan call, 4)
+	c, err := New(withToken(token), capture{calls: calls})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	routes := c.Routes()
+	if len(routes) != 1 {
+		t.Fatalf("routes = %v, want exactly one", routes)
+	}
+	if routes[0].Path != "/acp" {
+		t.Errorf("path = %q, want the default /acp", routes[0].Path)
+	}
+	return c, calls
+}
+
+func peerAt(t *testing.T, url string, c channel.Channel, calls chan call) *peer {
+	return &peer{t: t, url: url, reg: c.(acp).reg, calls: calls}
+}
+
+func newPeer(t *testing.T) *peer {
+	t.Helper()
+	c, calls := newChannel(t)
+	srv := httptest.NewServer(c.Routes()[0].Handler)
+	t.Cleanup(srv.Close)
+	return peerAt(t, srv.URL, c, calls)
+}
+
+func (p *peer) do(method, body string, hdr map[string]string) *http.Response {
+	p.t.Helper()
+	r, err := http.NewRequest(method, p.url, strings.NewReader(body))
+	if err != nil {
+		p.t.Fatalf("new request: %v", err)
+	}
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		p.t.Fatalf("%s: %v", method, err)
+	}
+	p.t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func (p *peer) post(body string, hdr map[string]string) *http.Response {
+	p.t.Helper()
+	h := map[string]string{"Authorization": "Bearer " + token, "Content-Type": jsonMediaType}
+	maps.Copy(h, hdr)
+	return p.do(http.MethodPost, body, h)
+}
+
+func (p *peer) connections() int {
+	p.reg.mu.Lock()
+	defer p.reg.mu.Unlock()
+	return len(p.reg.conns)
+}
+
+// initialize opens a connection and returns the id the transport issued, having
+// checked it is reported in both the body and the response header.
+func (p *peer) initialize() string {
+	p.t.Helper()
+	resp := p.post(initializeBody, nil)
+	if resp.StatusCode != http.StatusOK {
+		p.t.Fatalf("initialize = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Result initializeResult `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		p.t.Fatalf("initialize body: %v", err)
+	}
+	if out.Result.ConnectionID == "" {
+		p.t.Fatal("initialize answered no connectionId")
+	}
+	if got := resp.Header.Get(connectionHeader); got != out.Result.ConnectionID {
+		p.t.Errorf("%s header = %q, want the id in the body %q", connectionHeader, got, out.Result.ConnectionID)
+	}
+	return out.Result.ConnectionID
+}
+
+type events struct {
+	msgs  chan string
+	ended chan struct{}
+}
+
+// stream opens an SSE stream and reads its messages in the background.
+func (p *peer) stream(hdr map[string]string) *events {
+	p.t.Helper()
+	h := map[string]string{"Authorization": "Bearer " + token, "Accept": sseMediaType}
+	maps.Copy(h, hdr)
+	resp := p.do(http.MethodGet, "", h)
+	if resp.StatusCode != http.StatusOK {
+		p.t.Fatalf("GET = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	e := &events{msgs: make(chan string, 4), ended: make(chan struct{})}
+	go func() {
+		defer close(e.ended)
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if data, found := strings.CutPrefix(line, "data: "); found {
+				e.msgs <- strings.TrimSpace(data)
+			}
+		}
+	}()
+	return e
+}
+
+func (e *events) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case m := <-e.msgs:
+		return m
+	case <-e.ended:
+		t.Fatal("the stream ended before a message arrived")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message arrived on the stream")
+	}
+	return ""
+}
+
+// newSession creates a session, taking the answer off the connection-scoped
+// stream the transport puts it on.
+func (p *peer) newSession(connID string, connStream *events) string {
+	p.t.Helper()
+	body := `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`
+	if got := p.post(body, map[string]string{connectionHeader: connID}).StatusCode; got != http.StatusAccepted {
+		p.t.Fatalf("session/new = %d, want %d", got, http.StatusAccepted)
+	}
+	var out struct {
+		Result struct {
+			SessionID string `json:"sessionId"`
+		} `json:"result"`
+	}
+	msg := connStream.next(p.t)
+	if err := json.Unmarshal([]byte(msg), &out); err != nil {
+		p.t.Fatalf("session/new answer %q: %v", msg, err)
+	}
+	if out.Result.SessionID == "" {
+		p.t.Fatalf("session/new answer %q carried no sessionId", msg)
+	}
+	return out.Result.SessionID
+}
+
+func promptBody(sessionID, text string) string {
+	return `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"` + sessionID +
+		`","prompt":[{"type":"text","text":"` + text + `"}]}}`
+}
+
+func TestInitializeAnswersTheNegotiatedVersionAndNoAuthMethods(t *testing.T) {
+	p := newPeer(t)
+	resp := p.post(initializeBody, nil)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var out struct {
+		Result initializeResult `json:"result"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("initialize body: %v", err)
+	}
+	if out.Result.ProtocolVersion != protocolVersion {
+		t.Errorf("protocolVersion = %d, want %d", out.Result.ProtocolVersion, protocolVersion)
+	}
+	if !strings.Contains(string(body), `"authMethods":[]`) {
+		t.Errorf("body = %s, want an empty authMethods list", body)
+	}
+}
+
+func TestTokenIsRequiredOnEveryMethod(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		for name, auth := range map[string]string{"missing": "", "wrong": "Bearer not-the-token"} {
+			t.Run(method+" "+name, func(t *testing.T) {
+				p := newPeer(t)
+				hdr := map[string]string{"Content-Type": jsonMediaType, "Accept": sseMediaType}
+				if auth != "" {
+					hdr["Authorization"] = auth
+				}
+				resp := p.do(method, initializeBody, hdr)
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("%s = %d, want %d", method, resp.StatusCode, http.StatusUnauthorized)
+				}
+				if got := p.connections(); got != 0 {
+					t.Errorf("connections = %d, want none created", got)
+				}
+			})
+		}
+	}
+}
+
+func TestPostRejectsAnythingButJSON(t *testing.T) {
+	p := newPeer(t)
+	for _, contentType := range []string{"", "text/plain"} {
+		t.Run(contentType, func(t *testing.T) {
+			hdr := map[string]string{"Authorization": "Bearer " + token}
+			if contentType != "" {
+				hdr["Content-Type"] = contentType
+			}
+			resp := p.do(http.MethodPost, initializeBody, hdr)
+			if resp.StatusCode != http.StatusUnsupportedMediaType {
+				t.Fatalf("POST = %d, want %d", resp.StatusCode, http.StatusUnsupportedMediaType)
+			}
+		})
+	}
+}
+
+// A request that resolved its connection just before the connection was closed
+// still holds it, and must not be able to open a stream nothing will ever close.
+func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
+	g := newRegistry()
+	id, err := g.create()
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	c := g.lookup(id)
+	g.stop()
+	if err := c.attach(connectionScope, newStream()); err == nil {
+		t.Error("attach succeeded on a closed connection, want it refused")
+	}
+	if _, err := c.newSession(); err == nil {
+		t.Error("newSession succeeded on a closed connection, want it refused")
+	}
+}
+
+func TestStreamRequiresTheEventStreamAccept(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	for _, accept := range []string{"", "application/json", "*/*"} {
+		t.Run(accept, func(t *testing.T) {
+			hdr := map[string]string{"Authorization": "Bearer " + token, connectionHeader: id}
+			if accept != "" {
+				hdr["Accept"] = accept
+			}
+			resp := p.do(http.MethodGet, "", hdr)
+			if resp.StatusCode != http.StatusNotAcceptable {
+				t.Fatalf("GET = %d, want %d", resp.StatusCode, http.StatusNotAcceptable)
+			}
+		})
+	}
+}
+
+func TestWebSocketUpgradeIsRefused(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	resp := p.do(http.MethodGet, "", map[string]string{
+		"Authorization":  "Bearer " + token,
+		"Accept":         sseMediaType,
+		"Upgrade":        "websocket",
+		connectionHeader: id,
+	})
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("GET with Upgrade = %d, want %d", resp.StatusCode, http.StatusNotImplemented)
+	}
+}
+
+func TestIdentityHeadersAreChecked(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+	sessionID := p.newSession(id, connStream)
+	other := p.initialize()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   string
+		hdr    map[string]string
+		want   int
+	}{
+		{
+			name: "POST without a connection id", method: http.MethodPost,
+			body: promptBody(sessionID, "hello"), hdr: map[string]string{sessionHeader: sessionID},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "POST with an unknown connection id", method: http.MethodPost,
+			body: promptBody(sessionID, "hello"),
+			hdr:  map[string]string{connectionHeader: "no-such-connection", sessionHeader: sessionID},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "session-scoped POST without a session id", method: http.MethodPost,
+			body: promptBody(sessionID, "hello"), hdr: map[string]string{connectionHeader: id},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "POST with an unknown session id", method: http.MethodPost,
+			body: promptBody(sessionID, "hello"),
+			hdr:  map[string]string{connectionHeader: id, sessionHeader: "no-such-session"},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "POST with a session of another connection", method: http.MethodPost,
+			body: promptBody(sessionID, "hello"),
+			hdr:  map[string]string{connectionHeader: other, sessionHeader: sessionID},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "POST whose params name another session", method: http.MethodPost,
+			body: promptBody("some-other-session", "hello"),
+			hdr:  map[string]string{connectionHeader: id, sessionHeader: sessionID},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "GET without a connection id", method: http.MethodGet,
+			hdr:  map[string]string{"Accept": sseMediaType},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "GET with an unknown connection id", method: http.MethodGet,
+			hdr:  map[string]string{"Accept": sseMediaType, connectionHeader: "no-such-connection"},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "GET with an unknown session id", method: http.MethodGet,
+			hdr:  map[string]string{"Accept": sseMediaType, connectionHeader: id, sessionHeader: "no-such-session"},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "DELETE without a connection id", method: http.MethodDelete,
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "DELETE with an unknown connection id", method: http.MethodDelete,
+			hdr:  map[string]string{connectionHeader: "no-such-connection"},
+			want: http.StatusNotFound,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := map[string]string{"Authorization": "Bearer " + token, "Content-Type": jsonMediaType}
+			maps.Copy(hdr, tc.hdr)
+			if got := p.do(tc.method, tc.body, hdr).StatusCode; got != tc.want {
+				t.Fatalf("%s = %d, want %d", tc.method, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBatchIsNotImplemented(t *testing.T) {
+	p := newPeer(t)
+	resp := p.post(` [`+initializeBody+`]`, nil)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("batch = %d, want %d", resp.StatusCode, http.StatusNotImplemented)
+	}
+}
+
+func TestUnusableBodiesAreAnswered(t *testing.T) {
+	p := newPeer(t)
+	for _, body := range []string{"", "not json at all", `{"jsonrpc":"1.0","method":"initialize"}`, `{"jsonrpc":"2.0","id":1}`} {
+		t.Run(body, func(t *testing.T) {
+			if got := p.post(body, nil).StatusCode; got != http.StatusBadRequest {
+				t.Fatalf("POST %q = %d, want %d", body, got, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestPromptReachesTheCoreAndIsAnsweredOnTheSessionStream(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+	sessionID := p.newSession(id, connStream)
+	sessionStream := p.stream(map[string]string{connectionHeader: id, sessionHeader: sessionID})
+
+	hdr := map[string]string{connectionHeader: id, sessionHeader: sessionID}
+	if got := p.post(promptBody(sessionID, "hello momo"), hdr).StatusCode; got != http.StatusAccepted {
+		t.Fatalf("session/prompt = %d, want %d", got, http.StatusAccepted)
+	}
+
+	got := <-p.calls
+	want := call{direction: "received", message: core.Message{Contact: sessionID, Text: "hello momo"}}
+	if got != want {
+		t.Errorf("core saw %+v, want %+v", got, want)
+	}
+	if answer := sessionStream.next(t); !strings.Contains(answer, `"stopReason":"`+stopReasonEndTurn+`"`) {
+		t.Errorf("session/prompt answer = %s, want stop reason %q", answer, stopReasonEndTurn)
+	}
+	select {
+	case msg := <-connStream.msgs:
+		t.Errorf("the connection stream carried %s, want the prompt answer on the session stream", msg)
+	default:
+	}
+}
+
+func TestUnimplementedMethodIsAnsweredAndLeavesTheConnectionUsable(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+
+	body := `{"jsonrpc":"2.0","id":9,"method":"session/list","params":{}}`
+	if got := p.post(body, map[string]string{connectionHeader: id}).StatusCode; got != http.StatusAccepted {
+		t.Fatalf("session/list = %d, want %d", got, http.StatusAccepted)
+	}
+	if answer := connStream.next(t); !strings.Contains(answer, `"code":-32601`) {
+		t.Errorf("answer = %s, want a method-not-found error", answer)
+	}
+	// The connection still works.
+	p.newSession(id, connStream)
+}
+
+func TestSessionNewRefusesMCPServers(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+
+	body := `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp",` +
+		`"mcpServers":[{"name":"tools","command":"/bin/tools","args":[]}]}}`
+	if got := p.post(body, map[string]string{connectionHeader: id}).StatusCode; got != http.StatusAccepted {
+		t.Fatalf("session/new = %d, want %d", got, http.StatusAccepted)
+	}
+	if answer := connStream.next(t); !strings.Contains(answer, `"code":-32602`) {
+		t.Errorf("answer = %s, want invalid params", answer)
+	}
+}
+
+func TestOneStreamPerScope(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	p.stream(map[string]string{connectionHeader: id})
+	resp := p.do(http.MethodGet, "", map[string]string{
+		"Authorization":  "Bearer " + token,
+		"Accept":         sseMediaType,
+		connectionHeader: id,
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second GET = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
+	p := newPeer(t)
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+	sessionID := p.newSession(id, connStream)
+	sessionStream := p.stream(map[string]string{connectionHeader: id, sessionHeader: sessionID})
+
+	hdr := map[string]string{"Authorization": "Bearer " + token, connectionHeader: id}
+	if got := p.do(http.MethodDelete, "", hdr).StatusCode; got != http.StatusNoContent {
+		t.Fatalf("DELETE = %d, want %d", got, http.StatusNoContent)
+	}
+	for name, e := range map[string]*events{"connection": connStream, "session": sessionStream} {
+		select {
+		case <-e.ended:
+		case <-time.After(2 * time.Second):
+			t.Errorf("the %s stream stayed open after DELETE", name)
+		}
+	}
+	if got := p.connections(); got != 0 {
+		t.Errorf("connections = %d, want none left", got)
+	}
+	if got := p.do(http.MethodDelete, "", hdr).StatusCode; got != http.StatusNotFound {
+		t.Errorf("DELETE of the same connection = %d, want %d", got, http.StatusNotFound)
+	}
+}
+
+func TestTokenIsRequired(t *testing.T) {
+	if _, err := New(withToken(""), nil); err == nil {
+		t.Fatal("New succeeded without a token, want an error")
+	}
+}
