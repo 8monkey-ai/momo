@@ -4,22 +4,24 @@ momo connects your messaging channels to AI agents. Contacts message your busine
 WhatsApp, Telegram or Facebook Messenger; momo receives every message, in both directions,
 and acts on it.
 
-This release connects one channel, [respond.io](https://respond.io), and its action is a
-log line for every message received and sent. Replies from an agent come in a later
-release.
-
 You run momo the way you run nginx or Caddy: one binary, one configuration file, logs on
 stdout, restart to apply a change.
 
 ## Install
 
-Build the binary with [Go](https://go.dev/dl/) 1.23 or newer:
+momo ships as a single static binary. Pick one:
 
-```
-go build -o momo ./cmd/momo
-```
+- **Prebuilt binary** *(WIP)*: download the binary for your platform from
+  [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it on your path.
 
-Copy it somewhere on your path, for example `/usr/local/bin/momo`.
+- **Build from source** (needs [Go](https://go.dev/dl/) 1.23 or newer):
+
+  ```
+  git clone https://github.com/8monkey-ai/momo && cd momo
+  go build -o momo ./cmd/momo
+  ```
+
+  Copy the binary somewhere on your path, for example `/usr/local/bin/momo`.
 
 ## Start
 
@@ -35,7 +37,7 @@ HTTP paths that channel serves:
 
 ```
 level=INFO msg="channel ready" channel=respondio paths="[/respondio/received /respondio/sent]"
-level=INFO msg="momo listening" address=:8080 health=/healthz
+level=INFO msg="🐒 momo listening" address=:8080 health=/healthz
 ```
 
 If the configuration file is missing, unreadable or incomplete, momo reports the reason and
@@ -122,3 +124,9 @@ incompletely.
 Both webhooks may also deliver event types momo does not act on, such as contact updates.
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
+
+## Connect an agent
+
+*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
+contact — lands in a follow-up release. Until then, momo receives, verifies and logs
+channel events.

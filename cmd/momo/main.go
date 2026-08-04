@@ -88,7 +88,7 @@ func serve(log *slog.Logger, srv *http.Server) error {
 
 	failed := make(chan error, 1)
 	go func() { failed <- srv.ListenAndServe() }()
-	log.Info("momo listening", "address", srv.Addr, "health", healthPath)
+	log.Info("🐒 momo listening", "address", srv.Addr, "health", healthPath)
 
 	select {
 	case err := <-failed:
