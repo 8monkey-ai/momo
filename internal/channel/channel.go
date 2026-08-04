@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/core"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 // Route is an HTTP endpoint a channel needs momo to serve. Channels that fetch

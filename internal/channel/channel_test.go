@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/core"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 func noSettings(any) error { return nil }

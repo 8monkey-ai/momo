@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/channel"
+	"github.com/8monkey-ai/momo/internal/channel"
 )
 
 // DefaultListen is the address momo serves on when the file says nothing.

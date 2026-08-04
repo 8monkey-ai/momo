@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/channel"
-	"github.com/turisanapo/momo-with-pi-5/internal/config"
-	"github.com/turisanapo/momo-with-pi-5/internal/core"
+	"github.com/8monkey-ai/momo/internal/channel"
+	"github.com/8monkey-ai/momo/internal/config"
+	"github.com/8monkey-ai/momo/internal/core"
 
-	_ "github.com/turisanapo/momo-with-pi-5/internal/respondio"
+	_ "github.com/8monkey-ai/momo/internal/respondio"
 )
 
 const (

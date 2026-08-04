@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/channel"
-	"github.com/turisanapo/momo-with-pi-5/internal/core"
+	"github.com/8monkey-ai/momo/internal/channel"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 func init() {

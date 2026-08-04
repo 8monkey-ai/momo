@@ -14,7 +14,7 @@ momo ships as a single static binary. Pick one:
 - **Prebuilt binary** *(WIP)*: download the binary for your platform from
   [GitHub Releases](https://github.com/8monkey-ai/momo/releases) and place it on your path.
 
-- **Build from source** (needs [Go](https://go.dev/dl/) 1.23 or newer):
+- **Build from source** (needs [Go](https://go.dev/dl/) 1.26 or newer):
 
   ```
   git clone https://github.com/8monkey-ai/momo && cd momo

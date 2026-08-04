@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/channel"
+	"github.com/8monkey-ai/momo/internal/channel"
 )
 
 type fixed struct {

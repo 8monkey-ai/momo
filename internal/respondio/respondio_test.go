@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/turisanapo/momo-with-pi-5/internal/core"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 const secret = "signing-key"
