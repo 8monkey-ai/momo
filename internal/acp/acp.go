@@ -66,6 +66,10 @@ func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 
 func (e *endpoint) Routes() []channel.Route { return e.routes }
 
+// momo releases a channel's long-lived responses by asking it for this shape
+// when it shuts down, so the assertion keeps the signature matching.
+var _ interface{ Close() } = (*endpoint)(nil)
+
 // Close ends every open stream, so the SSE responses momo is holding do not
 // keep a shutdown waiting for them.
 func (e *endpoint) Close() {

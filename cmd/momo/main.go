@@ -98,6 +98,15 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
+// closer is a channel that holds a response open beyond the request that
+// started it, such as an event stream. momo asks for this before it drains,
+// because such a response never ends on its own and http.Server.Shutdown does
+// not cancel a handler that is still writing one. A channel with nothing to
+// release does not implement it.
+type closer interface {
+	Close()
+}
+
 func serve(log *slog.Logger, srv *http.Server, instances []channel.Instance) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -113,11 +122,10 @@ func serve(log *slog.Logger, srv *http.Server, instances []channel.Instance) err
 	}
 
 	log.Info("shutting down, waiting for in-flight requests")
-	// A response that never ends on its own — an event stream a channel is
-	// holding open — would keep Shutdown waiting for the whole timeout, so
-	// channels release theirs before the drain starts.
 	for _, in := range instances {
-		in.Channel.Close()
+		if c, ok := in.Channel.(closer); ok {
+			c.Close()
+		}
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

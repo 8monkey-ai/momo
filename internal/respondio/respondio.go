@@ -46,11 +46,6 @@ type respondio struct {
 
 func (r respondio) Routes() []channel.Route { return r.routes }
 
-// Close has nothing to release: a webhook delivery is answered within its own
-// request. The dispatch the ponytail note below detaches is what will need
-// draining here.
-func (r respondio) Close() {}
-
 // New configures the respond.io channel: one route per registered webhook, each
 // verified with that webhook's own signing key.
 func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
