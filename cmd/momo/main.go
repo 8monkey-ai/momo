@@ -16,6 +16,7 @@ import (
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
 
+	_ "github.com/8monkey-ai/momo/internal/acp"
 	_ "github.com/8monkey-ai/momo/internal/respondio"
 )
 
