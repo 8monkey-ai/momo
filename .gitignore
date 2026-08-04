@@ -1,1 +1,32 @@
+# Built binary
 /momo
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Local config (holds the signing keys)
+momo.yaml
+momo.conf
+
+# Claude Code agent worktrees
+.claude/worktrees/
