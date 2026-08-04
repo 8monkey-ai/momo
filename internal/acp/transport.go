@@ -69,6 +69,11 @@ func (h *handler) post(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "unreadable body", http.StatusBadRequest)
 		return
 	}

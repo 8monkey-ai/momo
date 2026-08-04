@@ -174,8 +174,9 @@ The client must:
 6. `DELETE` the endpoint with the connection id when finished. That releases the
    connection's sessions and closes its streams.
 
-momo answers `method not found` to the rest of ACP: there is no agent behind it yet, so a
-prompt is received and logged, and nothing replies.
+A prompt is received, logged, and the turn ends immediately with stop reason `end_turn`:
+there is no agent behind momo yet, so no reply comes back. Every other ACP method is
+answered `method not found`, and the connection stays usable.
 
 Sessions live in memory only. Restarting momo loses every connection and session, and
 clients have to initialize again — momo closes the open streams as it shuts down rather

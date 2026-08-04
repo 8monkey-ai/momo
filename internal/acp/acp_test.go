@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 	"net/http"
@@ -278,6 +279,69 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 	}
 	if _, err := c.newSession(); err == nil {
 		t.Error("newSession succeeded on a closed connection, want it refused")
+	}
+}
+
+// fill opens maxConnections connections, each listening or not as asked.
+func fill(t *testing.T, g *registry, listening bool) {
+	t.Helper()
+	for range maxConnections {
+		id, err := g.create()
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if listening {
+			if err := g.lookup(id).attach(connectionScope, newStream()); err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+		}
+	}
+}
+
+func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
+	g := newRegistry()
+	fill(t, g, true)
+	if _, err := g.create(); !errors.Is(err, errTooManyConns) {
+		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
+	}
+}
+
+// A client that goes away without sending DELETE must not hold its slot until
+// momo restarts.
+func TestAbandonedConnectionsMakeRoom(t *testing.T) {
+	g := newRegistry()
+	fill(t, g, false)
+	if _, err := g.create(); err != nil {
+		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.conns) != 1 {
+		t.Errorf("connections = %d, want only the new one", len(g.conns))
+	}
+}
+
+func TestSessionsAreCappedPerConnection(t *testing.T) {
+	g := newRegistry()
+	id, err := g.create()
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	c := g.lookup(id)
+	for range maxSessionsPerConn {
+		if _, err := c.newSession(); err != nil {
+			t.Fatalf("newSession: %v", err)
+		}
+	}
+	if _, err := c.newSession(); !errors.Is(err, errTooManySessions) {
+		t.Fatalf("newSession past the cap = %v, want %v", err, errTooManySessions)
+	}
+}
+
+func TestAnOversizedBodyIsAnsweredTooLarge(t *testing.T) {
+	p := newPeer(t)
+	if got := p.post(strings.Repeat("x", maxBodyBytes+1), nil).StatusCode; got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST = %d, want %d", got, http.StatusRequestEntityTooLarge)
 	}
 }
 

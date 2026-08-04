@@ -45,11 +45,27 @@ func (g *registry) create() (string, error) {
 		return "", errStopping
 	}
 	if len(g.conns) >= maxConnections {
+		g.dropAbandoned()
+	}
+	if len(g.conns) >= maxConnections {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
 	g.conns[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
 	return id, nil
+}
+
+// dropAbandoned frees the connections nobody is listening to, so a client that
+// went away without sending DELETE does not hold a slot until momo restarts. A
+// client holds a stream for as long as it means to hear from momo; one caught
+// between streams is told its connection is unknown and initializes again.
+func (g *registry) dropAbandoned() {
+	for id, c := range g.conns {
+		if c.abandoned() {
+			delete(g.conns, id)
+			c.close()
+		}
+	}
 }
 
 func (g *registry) lookup(id string) *conn {
@@ -111,6 +127,13 @@ func (c *conn) hasSession(id string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sessions[id]
+}
+
+// abandoned reports whether nothing is listening to this connection.
+func (c *conn) abandoned() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.streams) == 0
 }
 
 // attach claims a scope for s. One writer per scope keeps routing unambiguous,

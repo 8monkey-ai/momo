@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // A stream that momo cannot write to fast enough loses messages rather than
 // blocking the request that produced them; this transport has no resumption, so
 // a message the client missed is gone either way.
 const streamBuffer = 32
+
+// A client that stops reading fills the socket buffer and leaves momo blocked
+// mid-write, where neither close nor shutdown can reach it. Every write is
+// bounded so that client cannot hold a stream, or momo's shutdown, open.
+const streamWriteTimeout = 5 * time.Second
 
 // stream is one SSE response momo writes server-to-client messages on.
 type stream struct {
@@ -36,7 +42,7 @@ func (s *stream) close() { s.once.Do(func() { close(s.closed) }) }
 // momo shuts down.
 func (s *stream) serve(ctx context.Context, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", sseMediaType)
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
 	// Flushing an empty response tells the client the stream is open before the
@@ -47,6 +53,9 @@ func (s *stream) serve(ctx context.Context, w http.ResponseWriter) {
 	for {
 		select {
 		case msg := <-s.msgs:
+			// A server that cannot set the deadline keeps the unbounded behavior; that
+			// is no worse than not asking.
+			_ = rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", msg); err != nil {
 				return
 			}
