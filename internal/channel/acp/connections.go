@@ -28,30 +28,33 @@ var (
 	errScopeTaken      = errors.New("a stream is already open for this scope")
 )
 
-// registry holds the live connections. They exist in memory only: a restart
-// loses them, and the client has to initialize again.
-type registry struct {
+// connections is this endpoint's table of live ACP connections: the ids
+// initialize issued, and for each the sessions it hosts and the streams momo
+// answers on. It is transport state, not a momo-wide concept — a channel that
+// has no connections to track needs nothing like it. The table exists in memory
+// only: a restart loses it, and the client has to initialize again.
+type connections struct {
 	mu       sync.Mutex
-	conns    map[string]*conn
+	byID     map[string]*conn
 	stopping bool
 }
 
-func newRegistry() *registry { return &registry{conns: map[string]*conn{}} }
+func newConnections() *connections { return &connections{byID: map[string]*conn{}} }
 
-func (g *registry) create() (string, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.stopping {
+func (cs *connections) create() (string, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.stopping {
 		return "", errStopping
 	}
-	if len(g.conns) >= maxConnections {
-		g.dropAbandoned()
+	if len(cs.byID) >= maxConnections {
+		cs.dropAbandoned()
 	}
-	if len(g.conns) >= maxConnections {
+	if len(cs.byID) >= maxConnections {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
-	g.conns[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
+	cs.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
 	return id, nil
 }
 
@@ -59,38 +62,38 @@ func (g *registry) create() (string, error) {
 // went away without sending DELETE does not hold a slot until momo restarts. A
 // client holds a stream for as long as it means to hear from momo; one caught
 // between streams is told its connection is unknown and initializes again.
-func (g *registry) dropAbandoned() {
-	for id, c := range g.conns {
+func (cs *connections) dropAbandoned() {
+	for id, c := range cs.byID {
 		if c.abandoned() {
-			delete(g.conns, id)
+			delete(cs.byID, id)
 			c.close()
 		}
 	}
 }
 
-func (g *registry) lookup(id string) *conn {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.conns[id]
+func (cs *connections) lookup(id string) *conn {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.byID[id]
 }
 
-func (g *registry) remove(id string) *conn {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	c := g.conns[id]
-	delete(g.conns, id)
+func (cs *connections) remove(id string) *conn {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	c := cs.byID[id]
+	delete(cs.byID, id)
 	return c
 }
 
 // stop drops every connection and closes its streams. A request arriving after
 // it finds no connection, so no stream can be opened again.
-func (g *registry) stop() {
-	g.mu.Lock()
-	g.stopping = true
-	conns := slices.Collect(maps.Values(g.conns))
-	g.conns = map[string]*conn{}
-	g.mu.Unlock()
-	for _, c := range conns {
+func (cs *connections) stop() {
+	cs.mu.Lock()
+	cs.stopping = true
+	live := slices.Collect(maps.Values(cs.byID))
+	cs.byID = map[string]*conn{}
+	cs.mu.Unlock()
+	for _, c := range live {
 		c.close()
 	}
 }

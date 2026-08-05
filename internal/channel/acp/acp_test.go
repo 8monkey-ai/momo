@@ -48,7 +48,7 @@ func withToken(t string) channel.Decoder {
 type peer struct {
 	t     *testing.T
 	url   string
-	reg   *registry
+	conns *connections
 	calls chan call
 }
 
@@ -70,7 +70,7 @@ func newChannel(t *testing.T) (channel.Channel, chan call) {
 }
 
 func peerAt(t *testing.T, url string, c channel.Channel, calls chan call) *peer {
-	return &peer{t: t, url: url, reg: c.(acp).reg, calls: calls}
+	return &peer{t: t, url: url, conns: c.(acp).conns, calls: calls}
 }
 
 func newPeer(t *testing.T) *peer {
@@ -106,9 +106,9 @@ func (p *peer) post(body string, hdr map[string]string) *http.Response {
 }
 
 func (p *peer) connections() int {
-	p.reg.mu.Lock()
-	defer p.reg.mu.Unlock()
-	return len(p.reg.conns)
+	p.conns.mu.Lock()
+	defer p.conns.mu.Unlock()
+	return len(p.conns.byID)
 }
 
 // initialize opens a connection and returns the id the transport issued, having
@@ -267,13 +267,13 @@ func TestPostRejectsAnythingButJSON(t *testing.T) {
 // A request that resolved its connection just before the connection was closed
 // still holds it, and must not be able to open a stream nothing will ever close.
 func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
-	g := newRegistry()
-	id, err := g.create()
+	cs := newConnections()
+	id, err := cs.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	c := g.lookup(id)
-	g.stop()
+	c := cs.lookup(id)
+	cs.stop()
 	if err := c.attach(connectionScope, newStream()); err == nil {
 		t.Error("attach succeeded on a closed connection, want it refused")
 	}
@@ -283,15 +283,15 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 }
 
 // fill opens maxConnections connections, each listening or not as asked.
-func fill(t *testing.T, g *registry, listening bool) {
+func fill(t *testing.T, cs *connections, listening bool) {
 	t.Helper()
 	for range maxConnections {
-		id, err := g.create()
+		id, err := cs.create()
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
 		if listening {
-			if err := g.lookup(id).attach(connectionScope, newStream()); err != nil {
+			if err := cs.lookup(id).attach(connectionScope, newStream()); err != nil {
 				t.Fatalf("attach: %v", err)
 			}
 		}
@@ -299,9 +299,9 @@ func fill(t *testing.T, g *registry, listening bool) {
 }
 
 func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
-	g := newRegistry()
-	fill(t, g, true)
-	if _, err := g.create(); !errors.Is(err, errTooManyConns) {
+	cs := newConnections()
+	fill(t, cs, true)
+	if _, err := cs.create(); !errors.Is(err, errTooManyConns) {
 		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
 	}
 }
@@ -309,25 +309,25 @@ func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
 // A client that goes away without sending DELETE must not hold its slot until
 // momo restarts.
 func TestAbandonedConnectionsMakeRoom(t *testing.T) {
-	g := newRegistry()
-	fill(t, g, false)
-	if _, err := g.create(); err != nil {
+	cs := newConnections()
+	fill(t, cs, false)
+	if _, err := cs.create(); err != nil {
 		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(g.conns) != 1 {
-		t.Errorf("connections = %d, want only the new one", len(g.conns))
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if len(cs.byID) != 1 {
+		t.Errorf("connections = %d, want only the new one", len(cs.byID))
 	}
 }
 
 func TestSessionsAreCappedPerConnection(t *testing.T) {
-	g := newRegistry()
-	id, err := g.create()
+	cs := newConnections()
+	id, err := cs.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	c := g.lookup(id)
+	c := cs.lookup(id)
 	for range maxSessionsPerConn {
 		if _, err := c.newSession(); err != nil {
 			t.Fatalf("newSession: %v", err)

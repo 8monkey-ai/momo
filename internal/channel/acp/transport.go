@@ -30,7 +30,7 @@ const (
 type handler struct {
 	token string
 	core  core.Handler
-	reg   *registry
+	conns *connections
 }
 
 // reject is an HTTP-level refusal: the request never becomes an ACP message.
@@ -166,7 +166,7 @@ func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
 		rj.write(w)
 		return
 	}
-	h.reg.remove(r.Header.Get(connectionHeader))
+	h.conns.remove(r.Header.Get(connectionHeader))
 	// The connection's sessions and streams go with it.
 	c.close()
 	w.WriteHeader(http.StatusNoContent)
@@ -185,7 +185,7 @@ func (h *handler) connection(r *http.Request) (*conn, *reject) {
 	if id == "" {
 		return nil, &reject{http.StatusBadRequest, connectionHeader + " is required"}
 	}
-	c := h.reg.lookup(id)
+	c := h.conns.lookup(id)
 	if c == nil {
 		return nil, &reject{http.StatusNotFound, "unknown connection"}
 	}

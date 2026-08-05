@@ -21,14 +21,14 @@ type settings struct {
 
 type acp struct {
 	route channel.Route
-	reg   *registry
+	conns *connections
 }
 
 func (a acp) Routes() []channel.Route { return []channel.Route{a.route} }
 
 // Stop closes the open streams. An SSE response never ends on its own, so
 // without this momo's shutdown would wait for every connected client.
-func (a acp) Stop() { a.reg.stop() }
+func (a acp) Stop() { a.conns.stop() }
 
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
 // every request authenticated with the operator's bearer token.
@@ -40,9 +40,9 @@ func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	if s.Token == "" {
 		return nil, errors.New("token is required")
 	}
-	reg := newRegistry()
+	conns := newConnections()
 	return acp{
-		route: channel.Route{Path: s.Path, Handler: &handler{token: s.Token, core: h, reg: reg}},
-		reg:   reg,
+		route: channel.Route{Path: s.Path, Handler: &handler{token: s.Token, core: h, conns: conns}},
+		conns: conns,
 	}, nil
 }
