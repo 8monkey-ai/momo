@@ -39,8 +39,8 @@ func (s *stream) send(msg []byte) {
 func (s *stream) close() { s.once.Do(func() { close(s.closed) }) }
 
 // serve writes messages until the stream is closed, the client goes away, or
-// momo shuts down.
-func (s *stream) serve(ctx context.Context, w http.ResponseWriter) {
+// momo's shutdown ends the channel's lifetime.
+func (s *stream) serve(ctx context.Context, life <-chan struct{}, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", sseMediaType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -65,6 +65,8 @@ func (s *stream) serve(ctx context.Context, w http.ResponseWriter) {
 		case <-s.closed:
 			return
 		case <-ctx.Done():
+			return
+		case <-life:
 			return
 		}
 	}

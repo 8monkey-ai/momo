@@ -3,8 +3,6 @@ package acp
 import (
 	"crypto/rand"
 	"errors"
-	"maps"
-	"slices"
 	"sync"
 )
 
@@ -34,9 +32,8 @@ var (
 // has no connections to track needs nothing like it. The table exists in memory
 // only: a restart loses it, and the client has to initialize again.
 type connections struct {
-	mu       sync.Mutex
-	byID     map[string]*conn
-	stopping bool
+	mu   sync.Mutex
+	byID map[string]*conn
 }
 
 func newConnections() *connections { return &connections{byID: map[string]*conn{}} }
@@ -44,9 +41,6 @@ func newConnections() *connections { return &connections{byID: map[string]*conn{
 func (cs *connections) create() (string, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	if cs.stopping {
-		return "", errStopping
-	}
 	if len(cs.byID) >= maxConnections {
 		cs.dropAbandoned()
 	}
@@ -83,19 +77,6 @@ func (cs *connections) remove(id string) *conn {
 	c := cs.byID[id]
 	delete(cs.byID, id)
 	return c
-}
-
-// stop drops every connection and closes its streams. A request arriving after
-// it finds no connection, so no stream can be opened again.
-func (cs *connections) stop() {
-	cs.mu.Lock()
-	cs.stopping = true
-	live := slices.Collect(maps.Values(cs.byID))
-	cs.byID = map[string]*conn{}
-	cs.mu.Unlock()
-	for _, c := range live {
-		c.close()
-	}
 }
 
 // conn is one initialized connection: the sessions it hosts and the streams

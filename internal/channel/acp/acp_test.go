@@ -52,10 +52,10 @@ type peer struct {
 	calls chan call
 }
 
-func newChannel(t *testing.T) (channel.Channel, chan call) {
+func newChannel(t *testing.T, life context.Context) (channel.Channel, chan call) {
 	t.Helper()
 	calls := make(chan call, 4)
-	c, err := New(withToken(token), capture{calls: calls})
+	c, err := New(life, withToken(token), capture{calls: calls})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -70,12 +70,12 @@ func newChannel(t *testing.T) (channel.Channel, chan call) {
 }
 
 func peerAt(t *testing.T, url string, c channel.Channel, calls chan call) *peer {
-	return &peer{t: t, url: url, conns: c.(acp).conns, calls: calls}
+	return &peer{t: t, url: url, conns: c.Routes()[0].Handler.(*handler).conns, calls: calls}
 }
 
-func newPeer(t *testing.T) *peer {
+func newPeer(t *testing.T, life context.Context) *peer {
 	t.Helper()
-	c, calls := newChannel(t)
+	c, calls := newChannel(t, life)
 	srv := httptest.NewServer(c.Routes()[0].Handler)
 	t.Cleanup(srv.Close)
 	return peerAt(t, srv.URL, c, calls)
@@ -207,7 +207,7 @@ func promptBody(sessionID, text string) string {
 }
 
 func TestInitializeAnswersTheNegotiatedVersionAndNoAuthMethods(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	resp := p.post(initializeBody, nil)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -231,7 +231,7 @@ func TestTokenIsRequiredOnEveryMethod(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
 		for name, auth := range map[string]string{"missing": "", "wrong": "Bearer not-the-token"} {
 			t.Run(method+" "+name, func(t *testing.T) {
-				p := newPeer(t)
+				p := newPeer(t, t.Context())
 				hdr := map[string]string{"Content-Type": jsonMediaType, "Accept": sseMediaType}
 				if auth != "" {
 					hdr["Authorization"] = auth
@@ -249,7 +249,7 @@ func TestTokenIsRequiredOnEveryMethod(t *testing.T) {
 }
 
 func TestPostRejectsAnythingButJSON(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	for _, contentType := range []string{"", "text/plain"} {
 		t.Run(contentType, func(t *testing.T) {
 			hdr := map[string]string{"Authorization": "Bearer " + token}
@@ -273,7 +273,9 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	c := cs.lookup(id)
-	cs.stop()
+	// Closed the way DELETE closes it.
+	cs.remove(id)
+	c.close()
 	if err := c.attach(connectionScope, newStream()); err == nil {
 		t.Error("attach succeeded on a closed connection, want it refused")
 	}
@@ -339,14 +341,14 @@ func TestSessionsAreCappedPerConnection(t *testing.T) {
 }
 
 func TestAnOversizedBodyIsAnsweredTooLarge(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	if got := p.post(strings.Repeat("x", maxBodyBytes+1), nil).StatusCode; got != http.StatusRequestEntityTooLarge {
 		t.Fatalf("POST = %d, want %d", got, http.StatusRequestEntityTooLarge)
 	}
 }
 
 func TestStreamRequiresTheEventStreamAccept(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	for _, accept := range []string{"", "application/json", "*/*"} {
 		t.Run(accept, func(t *testing.T) {
@@ -363,7 +365,7 @@ func TestStreamRequiresTheEventStreamAccept(t *testing.T) {
 }
 
 func TestWebSocketUpgradeIsRefused(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	resp := p.do(http.MethodGet, "", map[string]string{
 		"Authorization":  "Bearer " + token,
@@ -377,7 +379,7 @@ func TestWebSocketUpgradeIsRefused(t *testing.T) {
 }
 
 func TestIdentityHeadersAreChecked(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	connStream := p.stream(map[string]string{connectionHeader: id})
 	sessionID := p.newSession(id, connStream)
@@ -460,7 +462,7 @@ func TestIdentityHeadersAreChecked(t *testing.T) {
 }
 
 func TestBatchIsNotImplemented(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	resp := p.post(` [`+initializeBody+`]`, nil)
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("batch = %d, want %d", resp.StatusCode, http.StatusNotImplemented)
@@ -468,7 +470,7 @@ func TestBatchIsNotImplemented(t *testing.T) {
 }
 
 func TestUnusableBodiesAreAnswered(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	for _, body := range []string{"", "not json at all", `{"jsonrpc":"1.0","method":"initialize"}`, `{"jsonrpc":"2.0","id":1}`} {
 		t.Run(body, func(t *testing.T) {
 			if got := p.post(body, nil).StatusCode; got != http.StatusBadRequest {
@@ -479,7 +481,7 @@ func TestUnusableBodiesAreAnswered(t *testing.T) {
 }
 
 func TestPromptReachesTheCoreAndIsAnsweredOnTheSessionStream(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	connStream := p.stream(map[string]string{connectionHeader: id})
 	sessionID := p.newSession(id, connStream)
@@ -506,7 +508,7 @@ func TestPromptReachesTheCoreAndIsAnsweredOnTheSessionStream(t *testing.T) {
 }
 
 func TestUnimplementedMethodIsAnsweredAndLeavesTheConnectionUsable(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	connStream := p.stream(map[string]string{connectionHeader: id})
 
@@ -522,7 +524,7 @@ func TestUnimplementedMethodIsAnsweredAndLeavesTheConnectionUsable(t *testing.T)
 }
 
 func TestSessionNewRefusesMCPServers(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	connStream := p.stream(map[string]string{connectionHeader: id})
 
@@ -537,7 +539,7 @@ func TestSessionNewRefusesMCPServers(t *testing.T) {
 }
 
 func TestOneStreamPerScope(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	p.stream(map[string]string{connectionHeader: id})
 	resp := p.do(http.MethodGet, "", map[string]string{
@@ -551,7 +553,7 @@ func TestOneStreamPerScope(t *testing.T) {
 }
 
 func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
-	p := newPeer(t)
+	p := newPeer(t, t.Context())
 	id := p.initialize()
 	connStream := p.stream(map[string]string{connectionHeader: id})
 	sessionID := p.newSession(id, connStream)
@@ -577,7 +579,7 @@ func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
 }
 
 func TestTokenIsRequired(t *testing.T) {
-	if _, err := New(withToken(""), nil); err == nil {
+	if _, err := New(t.Context(), withToken(""), nil); err == nil {
 		t.Fatal("New succeeded without a token, want an error")
 	}
 }

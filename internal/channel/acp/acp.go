@@ -4,6 +4,7 @@
 package acp
 
 import (
+	"context"
 	"errors"
 
 	"github.com/8monkey-ai/momo/internal/channel"
@@ -21,18 +22,15 @@ type settings struct {
 
 type acp struct {
 	route channel.Route
-	conns *connections
 }
 
 func (a acp) Routes() []channel.Route { return []channel.Route{a.route} }
 
-// Stop closes the open streams. An SSE response never ends on its own, so
-// without this momo's shutdown would wait for every connected client.
-func (a acp) Stop() { a.conns.stop() }
-
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
-// every request authenticated with the operator's bearer token.
-func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+// every request authenticated with the operator's bearer token. ctx is the
+// channel's lifetime: an SSE response never ends on its own, so the streams are
+// tied to it and end when momo starts shutting down.
+func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	s := settings{Path: "/acp"}
 	if err := decode(&s); err != nil {
 		return nil, err
@@ -40,9 +38,8 @@ func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	if s.Token == "" {
 		return nil, errors.New("token is required")
 	}
-	conns := newConnections()
-	return acp{
-		route: channel.Route{Path: s.Path, Handler: &handler{token: s.Token, core: h, conns: conns}},
-		conns: conns,
-	}, nil
+	return acp{route: channel.Route{
+		Path:    s.Path,
+		Handler: &handler{token: s.Token, core: h, conns: newConnections(), life: ctx},
+	}}, nil
 }

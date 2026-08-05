@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,9 @@ type handler struct {
 	token string
 	core  core.Handler
 	conns *connections
+	// life is the channel's lifetime: it is done once momo starts shutting down,
+	// which ends the open streams and refuses new connections.
+	life context.Context
 }
 
 // reject is an HTTP-level refusal: the request never becomes an ACP message.
@@ -157,7 +161,7 @@ func (h *handler) openStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.detach(scope, s)
-	s.serve(r.Context(), w)
+	s.serve(r.Context(), h.life.Done(), w)
 }
 
 func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {

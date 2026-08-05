@@ -2,20 +2,46 @@ package acp
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/8monkey-ai/momo/internal/channel"
 )
 
 // readTimeout stands in for the read timeout momo's server runs with. A stream
 // has to outlive it, and momo's shutdown must not wait for the stream.
 const readTimeout = 200 * time.Millisecond
 
+// A client that connects once momo has begun shutting down must not be given a
+// connection it will never be answered on.
+func TestInitializeIsRefusedOnceMomoIsShuttingDown(t *testing.T) {
+	life, stopping := context.WithCancel(context.Background())
+	c, calls := newChannel(t, life)
+	srv := httptest.NewServer(c.Routes()[0].Handler)
+	t.Cleanup(srv.Close)
+	p := peerAt(t, srv.URL, c, calls)
+
+	stopping()
+
+	resp := p.post(initializeBody, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("initialize = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), errStopping.Error()) {
+		t.Errorf("initialize said %q, want it to name %v", body, errStopping)
+	}
+}
+
 func TestShutdownClosesStreamsInsteadOfWaitingForThem(t *testing.T) {
-	c, calls := newChannel(t)
+	life, stopping := context.WithCancel(context.Background())
+	c, calls := newChannel(t, life)
 	srv := &http.Server{
 		Handler:           c.Routes()[0].Handler,
 		ReadHeaderTimeout: readTimeout,
@@ -36,7 +62,7 @@ func TestShutdownClosesStreamsInsteadOfWaitingForThem(t *testing.T) {
 	// The answer still lands, so the read timeout did not cut the stream.
 	p.newSession(id, connStream)
 
-	channel.Stop([]channel.Instance{{Name: "acp", Channel: c}})
+	stopping()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()

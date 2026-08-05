@@ -45,6 +45,11 @@ type initializeResult struct {
 // initialize is the one request answered in the POST response rather than on a
 // stream: the client has nowhere to listen yet.
 func (h *handler) initialize(w http.ResponseWriter, req request) {
+	// A connection opened now would be answered on a stream momo is about to end.
+	if h.life.Err() != nil {
+		reject{http.StatusServiceUnavailable, errStopping.Error()}.write(w)
+		return
+	}
 	id, err := h.conns.create()
 	if err != nil {
 		reject{http.StatusServiceUnavailable, err.Error()}.write(w)

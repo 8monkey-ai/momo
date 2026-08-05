@@ -47,8 +47,9 @@ type respondio struct {
 func (r respondio) Routes() []channel.Route { return r.routes }
 
 // New configures the respond.io channel: one route per registered webhook, each
-// verified with that webhook's own signing key.
-func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+// verified with that webhook's own signing key. The channel holds nothing past a
+// request, so it has no use for its lifetime.
+func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",

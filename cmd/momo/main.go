@@ -41,7 +41,12 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	instances, err := channel.Build(cfg.Channels, core.LogHandler{Log: log})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The channels' lifetime is this context: the signal that starts the shutdown
+	// is what makes them let go of what they hold.
+	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log})
 	if err != nil {
 		return err
 	}
@@ -50,7 +55,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	return serve(log, instances, &http.Server{
+	return serve(ctx, log, &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -98,10 +103,7 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(log *slog.Logger, instances []channel.Instance, srv *http.Server) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+func serve(ctx context.Context, log *slog.Logger, srv *http.Server) error {
 	failed := make(chan error, 1)
 	go func() { failed <- srv.ListenAndServe() }()
 	log.Info("🐒 momo listening", "address", srv.Addr, "health", healthPath)
@@ -113,9 +115,6 @@ func serve(log *slog.Logger, instances []channel.Instance, srv *http.Server) err
 	}
 
 	log.Info("shutting down, waiting for in-flight requests")
-	// Channels holding a response that never ends on its own release it here, so a
-	// connected client cannot hold the shutdown open to its timeout.
-	channel.Stop(instances)
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdown)
