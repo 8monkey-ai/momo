@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +205,74 @@ func (p *peer) newSession(connID string, connStream *events) string {
 func promptBody(sessionID, text string) string {
 	return `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"` + sessionID +
 		`","prompt":[{"type":"text","text":"` + text + `"}]}}`
+}
+
+// session opens a connection and a session on it, and returns the session's id,
+// the headers a request about that session needs, and the stream its answers
+// arrive on.
+func (p *peer) session() (string, map[string]string, *events) {
+	p.t.Helper()
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+	sessionID := p.newSession(id, connStream)
+	hdr := map[string]string{connectionHeader: id, sessionHeader: sessionID}
+	return sessionID, hdr, p.stream(hdr)
+}
+
+// A prompt momo does not read is still a prompt: every block reaches the core as
+// it arrived, so nothing is lost before there is an agent to hand it to.
+func TestPromptCarriesEveryContentBlockToTheCore(t *testing.T) {
+	p := newPeer(t, t.Context())
+	sessionID, hdr, _ := p.session()
+
+	body := `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"` + sessionID +
+		`","prompt":[{"type":"text","text":"look at this"},` +
+		`{"type":"image","data":"aGk=","mimeType":"image/png"}]}}`
+	if got := p.post(body, hdr).StatusCode; got != http.StatusAccepted {
+		t.Fatalf("session/prompt = %d, want %d", got, http.StatusAccepted)
+	}
+
+	got := <-p.calls
+	want := call{direction: "received", message: core.Message{Contact: sessionID, Content: []core.Block{
+		core.Text("look at this"),
+		{Type: "image", Data: "aGk=", MimeType: "image/png"},
+	}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("core saw %+v, want %+v", got, want)
+	}
+}
+
+func TestPromptRefusesAnUnreadableBlockList(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prompt string
+	}{
+		{name: "no blocks at all", prompt: `[]`},
+		{name: "absent", prompt: ``},
+		{name: "a block without a type", prompt: `[{"text":"hello"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPeer(t, t.Context())
+			sessionID, hdr, sessionStream := p.session()
+
+			params := `{"sessionId":"` + sessionID + `"`
+			if tc.prompt != "" {
+				params += `,"prompt":` + tc.prompt
+			}
+			body := `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":` + params + `}}`
+			if got := p.post(body, hdr).StatusCode; got != http.StatusAccepted {
+				t.Fatalf("session/prompt = %d, want %d", got, http.StatusAccepted)
+			}
+			if answer := sessionStream.next(t); !strings.Contains(answer, `"code":-32602`) {
+				t.Errorf("answer = %s, want invalid params", answer)
+			}
+			select {
+			case got := <-p.calls:
+				t.Errorf("core saw %+v, want no message", got)
+			default:
+			}
+		})
+	}
 }
 
 func TestInitializeAnswersTheNegotiatedVersionAndNoAuthMethods(t *testing.T) {
@@ -493,8 +562,11 @@ func TestPromptReachesTheCoreAndIsAnsweredOnTheSessionStream(t *testing.T) {
 	}
 
 	got := <-p.calls
-	want := call{direction: "received", message: core.Message{Contact: sessionID, Text: "hello momo"}}
-	if got != want {
+	want := call{
+		direction: "received",
+		message:   core.Message{Contact: sessionID, Content: []core.Block{core.Text("hello momo")}},
+	}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("core saw %+v, want %+v", got, want)
 	}
 	if answer := sessionStream.next(t); !strings.Contains(answer, `"stopReason":"`+stopReasonEndTurn+`"`) {

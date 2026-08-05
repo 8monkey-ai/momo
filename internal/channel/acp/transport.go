@@ -20,8 +20,9 @@ const (
 	jsonMediaType = "application/json"
 	sseMediaType  = "text/event-stream"
 
-	// A prompt is text, so a megabyte is generous; the limit keeps a client from
-	// making momo buffer without bound.
+	// A prompt now carries whatever content blocks the client sends, so a
+	// base64 image or audio block makes this a real ceiling rather than a
+	// formality; it keeps a client from making momo buffer without bound.
 	maxBodyBytes = 1 << 20
 )
 

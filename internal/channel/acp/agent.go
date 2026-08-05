@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/8monkey-ai/momo/internal/core"
 )
@@ -21,10 +20,7 @@ const (
 	methodCancel     = "session/cancel"
 )
 
-const (
-	stopReasonEndTurn = "end_turn"
-	textBlock         = "text"
-)
+const stopReasonEndTurn = "end_turn"
 
 type initializeResult struct {
 	ProtocolVersion int `json:"protocolVersion"`
@@ -88,26 +84,24 @@ func (h *handler) newSession(c *conn, req request) []byte {
 // session/update notifications or any other stop reason.
 func (h *handler) prompt(ctx context.Context, sessionID string, req request) []byte {
 	var p struct {
-		Prompt []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"prompt"`
+		Prompt []core.Block `json:"prompt"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return failed(req.ID, codeInvalidParams, "unreadable params")
 	}
-	texts := make([]string, 0, len(p.Prompt))
+	if len(p.Prompt) == 0 {
+		return failed(req.ID, codeInvalidParams, "prompt must carry at least one content block")
+	}
 	for _, block := range p.Prompt {
-		if block.Type == textBlock {
-			texts = append(texts, block.Text)
+		if block.Type == "" {
+			return failed(req.ID, codeInvalidParams, "every content block needs a type")
 		}
 	}
-	// The prompt is the contact speaking, and the session is the contact. Nothing
-	// here is Sent: that direction needs an agent to produce it, and there is none
-	// yet. A prompt of nothing but blocks momo does not read is not a message,
-	// so the core hears nothing.
-	if text := strings.Join(texts, "\n"); text != "" {
-		h.core.Received(ctx, core.Message{Contact: sessionID, Text: text})
-	}
+	// The prompt is the contact speaking, and the session is the contact. The
+	// blocks go on as they arrived, including the types momo does not read: the
+	// core's content is ACP's, so there is nothing to convert and nothing to drop.
+	// Nothing here is Sent: that direction needs an agent to produce it, and there
+	// is none yet.
+	h.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt})
 	return succeeded(req.ID, map[string]string{"stopReason": stopReasonEndTurn})
 }

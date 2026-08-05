@@ -169,14 +169,18 @@ The client must:
 4. `POST` `session/new`. The answer arrives on the stream from step 3 and carries a session
    id. Send it as `Acp-Session-Id`, alongside the connection id, on everything to do with
    that session, and open a second stream for it the same way.
-5. `POST` `session/prompt` with the text. momo logs the message and answers on that
-   session's stream. One connection may hold several sessions, each its own contact.
+5. `POST` `session/prompt` with the prompt's content blocks. A prompt may carry any ACP
+   content block — text, image, audio, resource link or embedded resource — and momo
+   carries the blocks to the core as they arrived rather than reducing them to text. It
+   logs the message and answers on that session's stream. One connection may hold several
+   sessions, each its own contact.
 6. `DELETE` the endpoint with the connection id when finished. That releases the
    connection's sessions and closes its streams.
 
 A prompt is received, logged, and the turn ends immediately with stop reason `end_turn`:
-there is no agent behind momo yet, so no reply comes back. Every other ACP method is
-answered `method not found`, and the connection stays usable.
+there is no agent behind momo yet, so no reply comes back. A prompt with no content blocks,
+or with a block that names no type, is answered `invalid params` instead. Every other ACP
+method is answered `method not found`, and the connection stays usable.
 
 Sessions live in memory only. Restarting momo loses every connection and session, and
 clients have to initialize again — momo closes the open streams as it shuts down rather

@@ -116,7 +116,7 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	m := core.Message{
 		Contact: strconv.FormatInt(ev.Contact.ID, 10),
-		Text:    ev.Message.Message.Text,
+		Content: []core.Block{core.Text(ev.Message.Message.Text)},
 	}
 	switch ev.EventType {
 	case eventReceived:
