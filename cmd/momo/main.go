@@ -20,10 +20,7 @@ import (
 	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
 )
 
-const (
-	healthPath      = "/healthz"
-	shutdownTimeout = 20 * time.Second
-)
+const healthPath = "/healthz"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -58,10 +55,10 @@ func run(log *slog.Logger) error {
 	return serve(ctx, log, &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	})
+		ReadHeaderTimeout: cfg.Timeouts.ReadHeader,
+		ReadTimeout:       cfg.Timeouts.Read,
+		IdleTimeout:       cfg.Timeouts.Idle,
+	}, cfg.Timeouts.Shutdown)
 }
 
 func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, error) {
@@ -103,7 +100,7 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(ctx context.Context, log *slog.Logger, srv *http.Server) error {
+func serve(ctx context.Context, log *slog.Logger, srv *http.Server, shutdownTimeout time.Duration) error {
 	failed := make(chan error, 1)
 	go func() { failed <- srv.ListenAndServe() }()
 	log.Info("🐒 momo listening", "address", srv.Addr, "health", healthPath)

@@ -4,6 +4,7 @@
 package acp
 
 import (
+	"cmp"
 	"context"
 	"errors"
 
@@ -16,8 +17,10 @@ func init() {
 }
 
 type settings struct {
-	Token string `yaml:"token"`
-	Path  string `yaml:"path"`
+	Token                    string `yaml:"token"`
+	Path                     string `yaml:"path"`
+	MaxConnections           int    `yaml:"max_connections"`
+	MaxSessionsPerConnection int    `yaml:"max_sessions_per_connection"`
 }
 
 type acp struct {
@@ -38,8 +41,18 @@ func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.C
 	if s.Token == "" {
 		return nil, errors.New("token is required")
 	}
+	if s.MaxConnections < 0 {
+		return nil, errors.New("max_connections cannot be negative")
+	}
+	if s.MaxSessionsPerConnection < 0 {
+		return nil, errors.New("max_sessions_per_connection cannot be negative")
+	}
+	conns := newConnections(
+		cmp.Or(s.MaxConnections, defaultMaxConnections),
+		cmp.Or(s.MaxSessionsPerConnection, defaultMaxSessionsPerConn),
+	)
 	return acp{route: channel.Route{
 		Path:    s.Path,
-		Handler: &handler{token: s.Token, core: h, conns: newConnections(), life: ctx},
+		Handler: &handler{token: s.Token, core: h, conns: conns, life: ctx},
 	}}, nil
 }

@@ -64,6 +64,17 @@ rebuild.
 # Address momo listens on. Default: ":8080"
 listen: ":8080"
 
+# How long momo waits, each a duration such as "30s" or "2m".
+timeouts:
+  # Reading a request's headers. Default: "10s"
+  read_header: "10s"
+  # Reading a whole request, headers and body. Default: "30s"
+  read: "30s"
+  # Keeping an idle connection open between requests. Default: "2m"
+  idle: "2m"
+  # Finishing the requests already in progress at shutdown. Default: "20s"
+  shutdown: "20s"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -80,6 +91,11 @@ channels:
     token: "a long random string you generate"
     # Path momo serves the ACP endpoint on. Default: "/acp"
     path: "/acp"
+    # Connections momo holds at once. A client that reconnects without sending
+    # DELETE does not hold its slot once it stops listening. Default: 128
+    max_connections: 128
+    # Sessions one connection may hold at once. Default: 64
+    max_sessions_per_connection: 64
 ```
 
 Only the secrets are required. Every other setting has a default, so the shortest working

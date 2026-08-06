@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,9 +40,13 @@ func (c capture) Sent(_ context.Context, m core.Message) {
 	c.calls <- call{direction: "sent", message: m}
 }
 
-func withToken(t string) channel.Decoder {
+// with fills the channel's settings the way the operator's file would, leaving
+// the path New defaults and standing for an absent key with a zero field.
+func with(s settings) channel.Decoder {
 	return func(v any) error {
-		v.(*settings).Token = t
+		d := v.(*settings)
+		s.Path = cmp.Or(s.Path, d.Path)
+		*d = s
 		return nil
 	}
 }
@@ -56,7 +61,7 @@ type peer struct {
 func newChannel(t *testing.T, life context.Context) (channel.Channel, chan call) {
 	t.Helper()
 	calls := make(chan call, 4)
-	c, err := New(life, withToken(token), capture{calls: calls})
+	c, err := New(life, with(settings{Token: token}), capture{calls: calls})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -77,6 +82,23 @@ func peerAt(t *testing.T, url string, c channel.Channel, calls chan call) *peer 
 func newPeer(t *testing.T, life context.Context) *peer {
 	t.Helper()
 	c, calls := newChannel(t, life)
+	return served(t, c, calls)
+}
+
+// newPeerWith serves a channel built from decode, for the tests that configure
+// the channel's own settings.
+func newPeerWith(t *testing.T, decode channel.Decoder) *peer {
+	t.Helper()
+	calls := make(chan call, 4)
+	c, err := New(t.Context(), decode, capture{calls: calls})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return served(t, c, calls)
+}
+
+func served(t *testing.T, c channel.Channel, calls chan call) *peer {
+	t.Helper()
 	srv := httptest.NewServer(c.Routes()[0].Handler)
 	t.Cleanup(srv.Close)
 	return peerAt(t, srv.URL, c, calls)
@@ -336,7 +358,7 @@ func TestPostRejectsAnythingButJSON(t *testing.T) {
 // A request that resolved its connection just before the connection was closed
 // still holds it, and must not be able to open a stream nothing will ever close.
 func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
-	cs := newConnections()
+	cs := newDefaultConnections()
 	id, err := cs.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -353,10 +375,16 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 	}
 }
 
-// fill opens maxConnections connections, each listening or not as asked.
+// newDefaultConnections builds the table with the limits the channel takes when
+// the file configures neither.
+func newDefaultConnections() *connections {
+	return newConnections(defaultMaxConnections, defaultMaxSessionsPerConn)
+}
+
+// fill opens as many connections as the table holds, each listening or not as asked.
 func fill(t *testing.T, cs *connections, listening bool) {
 	t.Helper()
-	for range maxConnections {
+	for range cs.max {
 		id, err := cs.create()
 		if err != nil {
 			t.Fatalf("create: %v", err)
@@ -370,7 +398,7 @@ func fill(t *testing.T, cs *connections, listening bool) {
 }
 
 func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
-	cs := newConnections()
+	cs := newDefaultConnections()
 	fill(t, cs, true)
 	if _, err := cs.create(); !errors.Is(err, errTooManyConns) {
 		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
@@ -380,7 +408,7 @@ func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
 // A client that goes away without sending DELETE must not hold its slot until
 // momo restarts.
 func TestAbandonedConnectionsMakeRoom(t *testing.T) {
-	cs := newConnections()
+	cs := newDefaultConnections()
 	fill(t, cs, false)
 	if _, err := cs.create(); err != nil {
 		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
@@ -393,13 +421,13 @@ func TestAbandonedConnectionsMakeRoom(t *testing.T) {
 }
 
 func TestSessionsAreCappedPerConnection(t *testing.T) {
-	cs := newConnections()
+	cs := newDefaultConnections()
 	id, err := cs.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	c := cs.lookup(id)
-	for range maxSessionsPerConn {
+	for range defaultMaxSessionsPerConn {
 		if _, err := c.newSession(); err != nil {
 			t.Fatalf("newSession: %v", err)
 		}
@@ -659,7 +687,61 @@ func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
 }
 
 func TestTokenIsRequired(t *testing.T) {
-	if _, err := New(t.Context(), withToken(""), nil); err == nil {
+	if _, err := New(t.Context(), with(settings{}), nil); err == nil {
 		t.Fatal("New succeeded without a token, want an error")
+	}
+}
+
+func TestConfiguredMaxConnectionsIsWhatAClientHits(t *testing.T) {
+	p := newPeerWith(t, with(settings{Token: token, MaxConnections: 1}))
+	id := p.initialize()
+	// The connection has to be listening, or it is dropped as abandoned to make room.
+	p.stream(map[string]string{connectionHeader: id})
+
+	resp := p.post(initializeBody, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("initialize past max_connections = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), errTooManyConns.Error()) {
+		t.Errorf("initialize said %q, want it to name %v", body, errTooManyConns)
+	}
+}
+
+func TestConfiguredMaxSessionsPerConnectionIsWhatAClientHits(t *testing.T) {
+	p := newPeerWith(t, with(settings{Token: token, MaxSessionsPerConnection: 1}))
+	id := p.initialize()
+	connStream := p.stream(map[string]string{connectionHeader: id})
+	p.newSession(id, connStream)
+
+	body := `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`
+	if got := p.post(body, map[string]string{connectionHeader: id}).StatusCode; got != http.StatusAccepted {
+		t.Fatalf("session/new = %d, want %d", got, http.StatusAccepted)
+	}
+	if answer := connStream.next(t); !strings.Contains(answer, errTooManySessions.Error()) {
+		t.Errorf("session/new past max_sessions_per_connection = %s, want %v", answer, errTooManySessions)
+	}
+}
+
+func TestANegativeLimitIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		key    string
+		decode channel.Decoder
+	}{
+		{key: "max_connections", decode: with(settings{Token: token, MaxConnections: -1})},
+		{key: "max_sessions_per_connection", decode: with(settings{Token: token, MaxSessionsPerConnection: -1})},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			_, err := New(t.Context(), tc.decode, nil)
+			if err == nil {
+				t.Fatalf("New succeeded with a negative %s, want an error", tc.key)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("error = %v, want it to name %q", err, tc.key)
+			}
+		})
 	}
 }

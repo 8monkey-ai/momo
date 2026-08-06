@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func load(t *testing.T, body string) *Config {
@@ -87,6 +89,56 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parse([]byte(tc.body)); err == nil {
 				t.Fatal("parse succeeded, want an error the operator can act on")
+			}
+		})
+	}
+}
+
+func TestTimeoutsBlockDecodesEveryValue(t *testing.T) {
+	cfg := load(t, "timeouts:\n  read_header: 5s\n  read: 15s\n  idle: 1m\n  shutdown: 9s\n")
+	want := Timeouts{
+		ReadHeader: 5 * time.Second,
+		Read:       15 * time.Second,
+		Idle:       time.Minute,
+		Shutdown:   9 * time.Second,
+	}
+	if cfg.Timeouts != want {
+		t.Errorf("timeouts = %+v, want %+v", cfg.Timeouts, want)
+	}
+}
+
+func TestAbsentTimeoutsTakeTheirDefaults(t *testing.T) {
+	want := Timeouts{
+		ReadHeader: defaultReadHeaderTimeout,
+		Read:       defaultReadTimeout,
+		Idle:       defaultIdleTimeout,
+		Shutdown:   defaultShutdownTimeout,
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "no timeouts block at all", body: "channels:\n  respondio:\n"},
+		{name: "an empty timeouts block", body: "timeouts:\n"},
+		{name: "a zero value per key", body: "timeouts:\n  read_header: 0s\n  read: 0s\n  idle: 0s\n  shutdown: 0s\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := load(t, tc.body).Timeouts; got != want {
+				t.Errorf("timeouts = %+v, want the defaults %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestANegativeTimeoutIsReported(t *testing.T) {
+	for _, key := range []string{"read_header", "read", "idle", "shutdown"} {
+		t.Run(key, func(t *testing.T) {
+			_, err := parse([]byte("timeouts:\n  " + key + ": -1s\n"))
+			if err == nil {
+				t.Fatalf("parse succeeded, want an error naming %q", key)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error = %v, want it to name %q", err, key)
 			}
 		})
 	}

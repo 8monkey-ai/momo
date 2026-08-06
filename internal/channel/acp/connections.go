@@ -10,8 +10,8 @@ const (
 	// A caller holding the token is trusted, so these are not a quota: they keep a
 	// client that reconnects without ever sending DELETE from growing momo's
 	// memory without bound.
-	maxConnections     = 128
-	maxSessionsPerConn = 64
+	defaultMaxConnections     = 128
+	defaultMaxSessionsPerConn = 64
 
 	// connectionScope is the key of the connection-scoped stream, the one scope
 	// that is not a session.
@@ -34,21 +34,27 @@ var (
 type connections struct {
 	mu   sync.Mutex
 	byID map[string]*conn
+	// max is how many connections this endpoint holds at once, and maxSessions how
+	// many sessions each of them hosts.
+	max         int
+	maxSessions int
 }
 
-func newConnections() *connections { return &connections{byID: map[string]*conn{}} }
+func newConnections(max, maxSessions int) *connections {
+	return &connections{byID: map[string]*conn{}, max: max, maxSessions: maxSessions}
+}
 
 func (cs *connections) create() (string, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	if len(cs.byID) >= maxConnections {
+	if len(cs.byID) >= cs.max {
 		cs.dropAbandoned()
 	}
-	if len(cs.byID) >= maxConnections {
+	if len(cs.byID) >= cs.max {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
-	cs.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
+	cs.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}, maxSessions: cs.maxSessions}
 	return id, nil
 }
 
@@ -83,10 +89,11 @@ func (cs *connections) remove(id string) *conn {
 // momo answers on, keyed by scope. Once closed it accepts nothing more, because
 // a request that resolved it a moment earlier still holds it.
 type conn struct {
-	mu       sync.Mutex
-	closed   bool
-	sessions map[string]bool
-	streams  map[string]*stream
+	mu          sync.Mutex
+	closed      bool
+	sessions    map[string]bool
+	maxSessions int
+	streams     map[string]*stream
 }
 
 func (c *conn) newSession() (string, error) {
@@ -95,7 +102,7 @@ func (c *conn) newSession() (string, error) {
 	if c.closed {
 		return "", errConnClosed
 	}
-	if len(c.sessions) >= maxSessionsPerConn {
+	if len(c.sessions) >= c.maxSessions {
 		return "", errTooManySessions
 	}
 	// ponytail: momo issues the session id, and today it is the only session id in

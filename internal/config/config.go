@@ -3,10 +3,12 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,15 +18,34 @@ import (
 // DefaultListen is the address momo serves on when the file says nothing.
 const DefaultListen = ":8080"
 
+// The timeouts momo serves with when the file says nothing.
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultReadTimeout       = 30 * time.Second
+	defaultIdleTimeout       = 2 * time.Minute
+	defaultShutdownTimeout   = 20 * time.Second
+)
+
 // Config is the configuration momo runs with. Channel blocks stay undecoded so
 // that each channel owns its own settings.
 type Config struct {
 	Listen   string
+	Timeouts Timeouts
 	Channels map[string]channel.Decoder
+}
+
+// Timeouts is how long momo waits: on a request being read, on an idle
+// connection, and on the in-flight requests during shutdown.
+type Timeouts struct {
+	ReadHeader time.Duration `yaml:"read_header"`
+	Read       time.Duration `yaml:"read"`
+	Idle       time.Duration `yaml:"idle"`
+	Shutdown   time.Duration `yaml:"shutdown"`
 }
 
 type file struct {
 	Listen   string               `yaml:"listen"`
+	Timeouts Timeouts             `yaml:"timeouts"`
 	Channels map[string]yaml.Node `yaml:"channels"`
 }
 
@@ -52,14 +73,38 @@ func parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
 		return nil, errors.New("invalid configuration: unexpected content after the first YAML document")
 	}
-	cfg := &Config{Listen: f.Listen, Channels: map[string]channel.Decoder{}}
+	cfg := &Config{Listen: f.Listen, Timeouts: f.Timeouts, Channels: map[string]channel.Decoder{}}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
+	}
+	if err := resolveTimeouts(&cfg.Timeouts); err != nil {
+		return nil, err
 	}
 	for name, node := range f.Channels {
 		cfg.Channels[name] = decoderFor(node)
 	}
 	return cfg, nil
+}
+
+// resolveTimeouts fills in the default for every timeout the file left out, and
+// reports a negative one, which would be no timeout at all.
+func resolveTimeouts(t *Timeouts) error {
+	for _, f := range []struct {
+		key      string
+		value    *time.Duration
+		fallback time.Duration
+	}{
+		{"read_header", &t.ReadHeader, defaultReadHeaderTimeout},
+		{"read", &t.Read, defaultReadTimeout},
+		{"idle", &t.Idle, defaultIdleTimeout},
+		{"shutdown", &t.Shutdown, defaultShutdownTimeout},
+	} {
+		if *f.value < 0 {
+			return fmt.Errorf("invalid configuration: timeouts.%s cannot be negative", f.key)
+		}
+		*f.value = cmp.Or(*f.value, f.fallback)
+	}
+	return nil
 }
 
 func decoderFor(node yaml.Node) channel.Decoder {
