@@ -89,6 +89,12 @@ func (h *handler) post(w http.ResponseWriter, r *http.Request) {
 		rj.write(w)
 		return
 	}
+	// session/cancel is v1's only client-to-server notification. Every other method
+	// momo answers, and an answer needs the id the client correlates it by.
+	if req.Notif && req.Method != methodCancel {
+		reject{http.StatusBadRequest, "a notification is accepted for " + methodCancel + " only"}.write(w)
+		return
+	}
 	if req.Method == methodInitialize {
 		h.initialize(w, req)
 		return
@@ -127,9 +133,7 @@ func (h *handler) dispatch(w http.ResponseWriter, r *http.Request, c *conn, req 
 		accepted(w)
 	default:
 		accepted(w)
-		if !req.Notif {
-			c.send(connectionScope, failed(req.ID, jsonrpc2.CodeMethodNotFound, "method not found: "+req.Method))
-		}
+		c.send(connectionScope, failed(req.ID, jsonrpc2.CodeMethodNotFound, "method not found: "+req.Method))
 	}
 }
 

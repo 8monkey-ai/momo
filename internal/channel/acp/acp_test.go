@@ -745,3 +745,51 @@ func TestANegativeLimitIsReported(t *testing.T) {
 		})
 	}
 }
+
+// A message momo answers needs an id to answer under: with none, the answer
+// cannot be correlated by the client, and it used to go out under a made-up 0.
+// session/cancel is v1's only client-to-server notification and stays accepted.
+func TestAMethodMomoAnswersIsRefusedWithoutAnID(t *testing.T) {
+	p := newPeer(t, t.Context())
+
+	resp := p.post(`{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":1}}`, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("initialize without an id = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if got := resp.Header.Get(connectionHeader); got != "" {
+		t.Errorf("%s = %q, want no connection issued", connectionHeader, got)
+	}
+	if got := p.connections(); got != 0 {
+		t.Errorf("connections = %d, want none opened", got)
+	}
+
+	sessionID, hdr, _ := p.session()
+	for _, tc := range []struct {
+		method string
+		body   string
+		hdr    map[string]string
+	}{
+		{
+			method: methodNewSession,
+			body:   `{"jsonrpc":"2.0","method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`,
+			hdr:    map[string]string{connectionHeader: hdr[connectionHeader]},
+		},
+		{
+			method: methodPrompt,
+			body: `{"jsonrpc":"2.0","method":"session/prompt","params":{"sessionId":"` + sessionID +
+				`","prompt":[{"type":"text","text":"hello"}]}}`,
+			hdr: hdr,
+		},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			if got := p.post(tc.body, tc.hdr).StatusCode; got != http.StatusBadRequest {
+				t.Errorf("%s without an id = %d, want %d", tc.method, got, http.StatusBadRequest)
+			}
+		})
+	}
+
+	cancel := `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sessionID + `"}}`
+	if got := p.post(cancel, hdr).StatusCode; got != http.StatusAccepted {
+		t.Errorf("session/cancel without an id = %d, want %d", got, http.StatusAccepted)
+	}
+}
