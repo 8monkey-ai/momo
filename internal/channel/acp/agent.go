@@ -22,8 +22,6 @@ const (
 	methodCancel     = "session/cancel"
 )
 
-const stopReasonEndTurn = "end_turn"
-
 type initializeResult struct {
 	ProtocolVersion int `json:"protocolVersion"`
 	// momo advertises nothing beyond the v1 baseline, and an omitted capability
@@ -45,7 +43,7 @@ type initializeResult struct {
 func (h *handler) initialize(w http.ResponseWriter, req jsonrpc2.Request) {
 	// A connection opened now would be answered on a stream momo is about to end.
 	if h.life.Err() != nil {
-		reject{http.StatusServiceUnavailable, errStopping.Error()}.write(w)
+		reject{http.StatusServiceUnavailable, "momo is shutting down"}.write(w)
 		return
 	}
 	id, err := h.conns.create()
@@ -105,5 +103,5 @@ func (h *handler) prompt(ctx context.Context, sessionID string, req jsonrpc2.Req
 	// Nothing here is Sent: that direction needs an agent to produce it, and there
 	// is none yet.
 	h.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt})
-	return succeeded(req.ID, map[string]string{"stopReason": stopReasonEndTurn})
+	return succeeded(req.ID, map[string]string{"stopReason": "end_turn"})
 }

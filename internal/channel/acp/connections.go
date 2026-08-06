@@ -19,7 +19,6 @@ const (
 )
 
 var (
-	errStopping        = errors.New("momo is shutting down")
 	errTooManyConns    = errors.New("too many open connections")
 	errTooManySessions = errors.New("too many sessions on this connection")
 	errConnClosed      = errors.New("connection closed")

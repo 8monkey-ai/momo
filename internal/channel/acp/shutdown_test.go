@@ -34,8 +34,8 @@ func TestInitializeIsRefusedOnceMomoIsShuttingDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	if !strings.Contains(string(body), errStopping.Error()) {
-		t.Errorf("initialize said %q, want it to name %v", body, errStopping)
+	if !strings.Contains(string(body), "momo is shutting down") {
+		t.Errorf("initialize said %q, want it to say momo is shutting down", body)
 	}
 }
 

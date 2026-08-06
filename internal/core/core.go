@@ -9,8 +9,6 @@ import (
 	"log/slog"
 )
 
-const textType = "text"
-
 // Block is one ACP content block. momo's internal representation of message
 // content is ACP's own, so a block a channel receives travels unchanged and a
 // channel that speaks ACP converts nothing.
@@ -29,7 +27,7 @@ type Block struct {
 }
 
 // Text is the content block for a message that is nothing but words.
-func Text(text string) Block { return Block{Type: textType, Text: text} }
+func Text(text string) Block { return Block{Type: "text", Text: text} }
 
 // String renders a block for a log line: what it is, and what it says when that
 // is words.

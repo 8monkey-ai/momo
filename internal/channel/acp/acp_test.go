@@ -605,8 +605,8 @@ func TestPromptReachesTheCoreAndIsAnsweredOnTheSessionStream(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("core saw %+v, want %+v", got, want)
 	}
-	if answer := sessionStream.next(t); !strings.Contains(answer, `"stopReason":"`+stopReasonEndTurn+`"`) {
-		t.Errorf("session/prompt answer = %s, want stop reason %q", answer, stopReasonEndTurn)
+	if answer := sessionStream.next(t); !strings.Contains(answer, `"stopReason":"end_turn"`) {
+		t.Errorf("session/prompt answer = %s, want the turn to have ended", answer)
 	}
 	select {
 	case msg := <-connStream.msgs:
