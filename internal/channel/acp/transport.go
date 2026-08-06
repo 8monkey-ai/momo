@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sourcegraph/jsonrpc2"
+
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -101,7 +103,7 @@ func (h *handler) post(w http.ResponseWriter, r *http.Request) {
 
 // dispatch answers every message other than initialize: accepted immediately,
 // answered later on a stream. Which stream is fixed by the method.
-func (h *handler) dispatch(w http.ResponseWriter, r *http.Request, c *conn, req request) {
+func (h *handler) dispatch(w http.ResponseWriter, r *http.Request, c *conn, req jsonrpc2.Request) {
 	switch req.Method {
 	case methodNewSession:
 		accepted(w)
@@ -125,8 +127,8 @@ func (h *handler) dispatch(w http.ResponseWriter, r *http.Request, c *conn, req 
 		accepted(w)
 	default:
 		accepted(w)
-		if req.ID != nil {
-			c.send(connectionScope, failed(req.ID, codeMethodNotFound, "method not found: "+req.Method))
+		if !req.Notif {
+			c.send(connectionScope, failed(req.ID, jsonrpc2.CodeMethodNotFound, "method not found: "+req.Method))
 		}
 	}
 }
@@ -212,7 +214,7 @@ func scopeOf(c *conn, r *http.Request) (string, *reject) {
 
 // sessionOf is scopeOf for the methods that must name a session, and holds the
 // two identities to the same session.
-func sessionOf(c *conn, r *http.Request, req request) (string, *reject) {
+func sessionOf(c *conn, r *http.Request, req jsonrpc2.Request) (string, *reject) {
 	if r.Header.Get(sessionHeader) == "" {
 		return "", &reject{http.StatusBadRequest, sessionHeader + " is required"}
 	}
@@ -223,7 +225,7 @@ func sessionOf(c *conn, r *http.Request, req request) (string, *reject) {
 	var p struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := json.Unmarshal(req.Params, &p); err == nil && p.SessionID != "" && p.SessionID != scope {
+	if err := json.Unmarshal(rawParams(req), &p); err == nil && p.SessionID != "" && p.SessionID != scope {
 		return "", &reject{http.StatusBadRequest, "sessionId does not match " + sessionHeader}
 	}
 	return scope, nil

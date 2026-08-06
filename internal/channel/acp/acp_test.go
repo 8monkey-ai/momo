@@ -540,7 +540,15 @@ func TestBatchIsNotImplemented(t *testing.T) {
 
 func TestUnusableBodiesAreAnswered(t *testing.T) {
 	p := newPeer(t, t.Context())
-	for _, body := range []string{"", "not json at all", `{"jsonrpc":"1.0","method":"initialize"}`, `{"jsonrpc":"2.0","id":1}`} {
+	for _, body := range []string{
+		"",
+		"not json at all",
+		`{"jsonrpc":"1.0","method":"initialize"}`,
+		`{"jsonrpc":"2.0","id":1}`,
+		// An id momo cannot echo back unchanged is refused rather than answered
+		// under a different id.
+		`{"jsonrpc":"2.0","id":-1,"method":"initialize"}`,
+	} {
 		t.Run(body, func(t *testing.T) {
 			if got := p.post(body, nil).StatusCode; got != http.StatusBadRequest {
 				t.Fatalf("POST %q = %d, want %d", body, got, http.StatusBadRequest)

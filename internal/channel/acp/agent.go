@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/sourcegraph/jsonrpc2"
+
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -40,7 +42,7 @@ type initializeResult struct {
 
 // initialize is the one request answered in the POST response rather than on a
 // stream: the client has nowhere to listen yet.
-func (h *handler) initialize(w http.ResponseWriter, req request) {
+func (h *handler) initialize(w http.ResponseWriter, req jsonrpc2.Request) {
 	// A connection opened now would be answered on a stream momo is about to end.
 	if h.life.Err() != nil {
 		reject{http.StatusServiceUnavailable, errStopping.Error()}.write(w)
@@ -59,42 +61,42 @@ func (h *handler) initialize(w http.ResponseWriter, req request) {
 	_, _ = w.Write(succeeded(req.ID, result))
 }
 
-func (h *handler) newSession(c *conn, req request) []byte {
+func (h *handler) newSession(c *conn, req jsonrpc2.Request) []byte {
 	var p struct {
 		MCPServers []json.RawMessage `json:"mcpServers"`
 	}
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return failed(req.ID, codeInvalidParams, "unreadable params")
+	if err := json.Unmarshal(rawParams(req), &p); err != nil {
+		return failed(req.ID, jsonrpc2.CodeInvalidParams, "unreadable params")
 	}
 	// cwd is accepted and ignored: momo has no filesystem to work in, so holding
 	// the client to an absolute path would protect nothing. mcpServers is refused
 	// because momo has no MCP client, and a client that asked for those tools
 	// would otherwise be told the session is ready and never learn they are absent.
 	if len(p.MCPServers) > 0 {
-		return failed(req.ID, codeInvalidParams, "momo connects to no MCP servers: omit mcpServers")
+		return failed(req.ID, jsonrpc2.CodeInvalidParams, "momo connects to no MCP servers: omit mcpServers")
 	}
 	id, err := c.newSession()
 	if err != nil {
-		return failed(req.ID, codeInternalError, err.Error())
+		return failed(req.ID, jsonrpc2.CodeInternalError, err.Error())
 	}
 	return succeeded(req.ID, map[string]string{"sessionId": id})
 }
 
 // prompt completes the turn immediately: there is no agent yet to produce
 // session/update notifications or any other stop reason.
-func (h *handler) prompt(ctx context.Context, sessionID string, req request) []byte {
+func (h *handler) prompt(ctx context.Context, sessionID string, req jsonrpc2.Request) []byte {
 	var p struct {
 		Prompt []core.Block `json:"prompt"`
 	}
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		return failed(req.ID, codeInvalidParams, "unreadable params")
+	if err := json.Unmarshal(rawParams(req), &p); err != nil {
+		return failed(req.ID, jsonrpc2.CodeInvalidParams, "unreadable params")
 	}
 	if len(p.Prompt) == 0 {
-		return failed(req.ID, codeInvalidParams, "prompt must carry at least one content block")
+		return failed(req.ID, jsonrpc2.CodeInvalidParams, "prompt must carry at least one content block")
 	}
 	for _, block := range p.Prompt {
 		if block.Type == "" {
-			return failed(req.ID, codeInvalidParams, "every content block needs a type")
+			return failed(req.ID, jsonrpc2.CodeInvalidParams, "every content block needs a type")
 		}
 	}
 	// The prompt is the contact speaking, and the session is the contact. The
