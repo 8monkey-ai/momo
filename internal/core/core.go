@@ -10,12 +10,12 @@ import (
 )
 
 // Block is one ACP content block. momo's internal representation of message
-// content is ACP's own, so a block a channel receives travels unchanged and a
-// channel that speaks ACP converts nothing.
+// content is ACP's own, so a channel that speaks ACP converts nothing.
 //
-// The fields are the ones ACP v1 requires across its five block types; the
-// optional decoration, annotations and _meta, is dropped, as nothing forwards a
-// block onward yet.
+// The fields are the ones ACP v1 requires across its five block types, and those
+// travel unchanged. The optional decoration is dropped: annotations and _meta on
+// every type, and description, size and title on a resource link. Nothing
+// forwards a block onward yet, so nothing can observe the loss.
 type Block struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
