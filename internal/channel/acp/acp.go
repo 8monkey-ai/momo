@@ -47,7 +47,7 @@ func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.C
 	if s.MaxSessionsPerConnection < 0 {
 		return nil, errors.New("max_sessions_per_connection cannot be negative")
 	}
-	conns := newConnections(
+	conns := newConnectionManager(
 		cmp.Or(s.MaxConnections, defaultMaxConnections),
 		cmp.Or(s.MaxSessionsPerConnection, defaultMaxSessionsPerConn),
 	)

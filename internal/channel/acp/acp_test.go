@@ -54,7 +54,7 @@ func with(s settings) channel.Decoder {
 type peer struct {
 	t     *testing.T
 	url   string
-	conns *connections
+	conns *connectionManager
 	calls chan call
 }
 
@@ -358,14 +358,14 @@ func TestPostRejectsAnythingButJSON(t *testing.T) {
 // A request that resolved its connection just before the connection was closed
 // still holds it, and must not be able to open a stream nothing will ever close.
 func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
-	cs := newDefaultConnections()
-	id, err := cs.create()
+	cm := newDefaultManager()
+	id, err := cm.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	c := cs.lookup(id)
+	c := cm.lookup(id)
 	// Closed the way DELETE closes it.
-	cs.remove(id)
+	cm.remove(id)
 	c.close()
 	if err := c.attach(connectionScope, newStream()); err == nil {
 		t.Error("attach succeeded on a closed connection, want it refused")
@@ -375,22 +375,22 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 	}
 }
 
-// newDefaultConnections builds the table with the limits the channel takes when
+// newDefaultManager builds a manager with the limits the channel takes when
 // the file configures neither.
-func newDefaultConnections() *connections {
-	return newConnections(defaultMaxConnections, defaultMaxSessionsPerConn)
+func newDefaultManager() *connectionManager {
+	return newConnectionManager(defaultMaxConnections, defaultMaxSessionsPerConn)
 }
 
-// fill opens as many connections as the table holds, each listening or not as asked.
-func fill(t *testing.T, cs *connections, listening bool) {
+// fill opens as many connections as the manager holds, each listening or not as asked.
+func fill(t *testing.T, cm *connectionManager, listening bool) {
 	t.Helper()
-	for range cs.max {
-		id, err := cs.create()
+	for range cm.max {
+		id, err := cm.create()
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
 		if listening {
-			if err := cs.lookup(id).attach(connectionScope, newStream()); err != nil {
+			if err := cm.lookup(id).attach(connectionScope, newStream()); err != nil {
 				t.Fatalf("attach: %v", err)
 			}
 		}
@@ -398,9 +398,9 @@ func fill(t *testing.T, cs *connections, listening bool) {
 }
 
 func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
-	cs := newDefaultConnections()
-	fill(t, cs, true)
-	if _, err := cs.create(); !errors.Is(err, errTooManyConns) {
+	cm := newDefaultManager()
+	fill(t, cm, true)
+	if _, err := cm.create(); !errors.Is(err, errTooManyConns) {
 		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
 	}
 }
@@ -408,25 +408,25 @@ func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
 // A client that goes away without sending DELETE must not hold its slot until
 // momo restarts.
 func TestAbandonedConnectionsMakeRoom(t *testing.T) {
-	cs := newDefaultConnections()
-	fill(t, cs, false)
-	if _, err := cs.create(); err != nil {
+	cm := newDefaultManager()
+	fill(t, cm, false)
+	if _, err := cm.create(); err != nil {
 		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
 	}
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	if len(cs.byID) != 1 {
-		t.Errorf("connections = %d, want only the new one", len(cs.byID))
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if len(cm.byID) != 1 {
+		t.Errorf("connections = %d, want only the new one", len(cm.byID))
 	}
 }
 
 func TestSessionsAreCappedPerConnection(t *testing.T) {
-	cs := newDefaultConnections()
-	id, err := cs.create()
+	cm := newDefaultManager()
+	id, err := cm.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	c := cs.lookup(id)
+	c := cm.lookup(id)
 	for range defaultMaxSessionsPerConn {
 		if _, err := c.newSession(); err != nil {
 			t.Fatalf("newSession: %v", err)

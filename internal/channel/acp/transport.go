@@ -34,7 +34,7 @@ const (
 type handler struct {
 	token string
 	core  core.Handler
-	conns *connections
+	conns *connectionManager
 	// life is the channel's lifetime: it is done once momo starts shutting down,
 	// which ends the open streams and refuses new connections.
 	life context.Context

@@ -25,12 +25,12 @@ var (
 	errScopeTaken      = errors.New("a stream is already open for this scope")
 )
 
-// connections is this endpoint's table of live ACP connections: the ids
+// connectionManager holds this endpoint's live ACP connections: the ids
 // initialize issued, and for each the sessions it hosts and the streams momo
 // answers on. It is transport state, not a momo-wide concept — a channel that
-// has no connections to track needs nothing like it. The table exists in memory
-// only: a restart loses it, and the client has to initialize again.
-type connections struct {
+// has no connections to track needs nothing like it. It holds them in memory
+// only: a restart loses them, and the client has to initialize again.
+type connectionManager struct {
 	mu   sync.Mutex
 	byID map[string]*conn
 	// max is how many connections this endpoint holds at once, and maxSessions how
@@ -39,21 +39,21 @@ type connections struct {
 	maxSessions int
 }
 
-func newConnections(max, maxSessions int) *connections {
-	return &connections{byID: map[string]*conn{}, max: max, maxSessions: maxSessions}
+func newConnectionManager(max, maxSessions int) *connectionManager {
+	return &connectionManager{byID: map[string]*conn{}, max: max, maxSessions: maxSessions}
 }
 
-func (cs *connections) create() (string, error) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	if len(cs.byID) >= cs.max {
-		cs.dropAbandoned()
+func (cm *connectionManager) create() (string, error) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if len(cm.byID) >= cm.max {
+		cm.dropAbandoned()
 	}
-	if len(cs.byID) >= cs.max {
+	if len(cm.byID) >= cm.max {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
-	cs.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}, maxSessions: cs.maxSessions}
+	cm.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}, maxSessions: cm.maxSessions}
 	return id, nil
 }
 
@@ -61,26 +61,26 @@ func (cs *connections) create() (string, error) {
 // went away without sending DELETE does not hold a slot until momo restarts. A
 // client holds a stream for as long as it means to hear from momo; one caught
 // between streams is told its connection is unknown and initializes again.
-func (cs *connections) dropAbandoned() {
-	for id, c := range cs.byID {
+func (cm *connectionManager) dropAbandoned() {
+	for id, c := range cm.byID {
 		if c.abandoned() {
-			delete(cs.byID, id)
+			delete(cm.byID, id)
 			c.close()
 		}
 	}
 }
 
-func (cs *connections) lookup(id string) *conn {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return cs.byID[id]
+func (cm *connectionManager) lookup(id string) *conn {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.byID[id]
 }
 
-func (cs *connections) remove(id string) *conn {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	c := cs.byID[id]
-	delete(cs.byID, id)
+func (cm *connectionManager) remove(id string) *conn {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	c := cm.byID[id]
+	delete(cm.byID, id)
 	return c
 }
 
