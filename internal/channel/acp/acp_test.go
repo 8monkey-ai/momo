@@ -689,7 +689,7 @@ func TestTheConnectionCeilingFollowsMomosBudget(t *testing.T) {
 }
 
 func TestTokenIsRequired(t *testing.T) {
-	if _, err := New(t.Context(), with(settings{}), nil, nil); err == nil {
+	if _, err := New(t.Context(), with(settings{}), nil, channel.NewConnectionBudget(defaultBudget)); err == nil {
 		t.Fatal("New succeeded without a token, want an error")
 	}
 }
