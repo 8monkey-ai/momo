@@ -1,7 +1,8 @@
 # momo
 
-momo connects your messaging channels to AI agents. Contacts message your business on
-WhatsApp, Telegram or Facebook Messenger; momo receives every message, in both directions,
+momo connects your channels to AI agents. Contacts message your business on WhatsApp,
+Telegram or Facebook Messenger, or a program speaks to momo over
+[ACP](https://agentclientprotocol.com); momo receives every message, in both directions,
 and acts on it.
 
 You run momo the way you run nginx or Caddy: one binary, one configuration file, logs on
