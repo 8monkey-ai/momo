@@ -26,12 +26,16 @@ const (
 	defaultShutdownTimeout   = 20 * time.Second
 )
 
+// The long-lived connections momo holds open at once when the file says nothing.
+const defaultMaxConnections = 128
+
 // Config is the configuration momo runs with. Channel blocks stay undecoded so
 // that each channel owns its own settings.
 type Config struct {
-	Listen   string
-	Timeouts Timeouts
-	Channels map[string]channel.Decoder
+	Listen         string
+	MaxConnections int
+	Timeouts       Timeouts
+	Channels       map[string]channel.Decoder
 }
 
 // Timeouts is how long momo waits: on a request being read, on an idle
@@ -44,9 +48,10 @@ type Timeouts struct {
 }
 
 type file struct {
-	Listen   string               `yaml:"listen"`
-	Timeouts Timeouts             `yaml:"timeouts"`
-	Channels map[string]yaml.Node `yaml:"channels"`
+	Listen         string               `yaml:"listen"`
+	MaxConnections int                  `yaml:"max_connections"`
+	Timeouts       Timeouts             `yaml:"timeouts"`
+	Channels       map[string]yaml.Node `yaml:"channels"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -73,10 +78,19 @@ func parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
 		return nil, errors.New("invalid configuration: unexpected content after the first YAML document")
 	}
-	cfg := &Config{Listen: f.Listen, Timeouts: f.Timeouts, Channels: map[string]channel.Decoder{}}
+	cfg := &Config{
+		Listen:         f.Listen,
+		MaxConnections: f.MaxConnections,
+		Timeouts:       f.Timeouts,
+		Channels:       map[string]channel.Decoder{},
+	}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
+	if cfg.MaxConnections < 0 {
+		return nil, errors.New("invalid configuration: max_connections cannot be negative")
+	}
+	cfg.MaxConnections = cmp.Or(cfg.MaxConnections, defaultMaxConnections)
 	if err := resolveTimeouts(&cfg.Timeouts); err != nil {
 		return nil, err
 	}

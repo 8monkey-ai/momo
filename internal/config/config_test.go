@@ -144,6 +144,28 @@ func TestANegativeTimeoutIsReported(t *testing.T) {
 	}
 }
 
+func TestMaxConnectionsIsKeptOrTakesItsDefault(t *testing.T) {
+	if got := load(t, "max_connections: 4\n").MaxConnections; got != 4 {
+		t.Errorf("max_connections = %d, want 4", got)
+	}
+	if got := load(t, "channels:\n  respondio:\n").MaxConnections; got != defaultMaxConnections {
+		t.Errorf("max_connections absent = %d, want the default %d", got, defaultMaxConnections)
+	}
+	if got := load(t, "max_connections: 0\n").MaxConnections; got != defaultMaxConnections {
+		t.Errorf("max_connections = 0 gave %d, want the default %d", got, defaultMaxConnections)
+	}
+}
+
+func TestANegativeMaxConnectionsIsReported(t *testing.T) {
+	_, err := parse([]byte("max_connections: -1\n"))
+	if err == nil {
+		t.Fatal("parse succeeded, want an error naming max_connections")
+	}
+	if !strings.Contains(err.Error(), "max_connections") {
+		t.Errorf("error = %v, want it to name max_connections", err)
+	}
+}
+
 func TestMissingFileIsReported(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load succeeded, want an error")

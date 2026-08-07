@@ -7,11 +7,8 @@ import (
 )
 
 const (
-	// A caller holding the token is trusted, so these are not a quota: they keep a
-	// client that reconnects without ever sending DELETE from growing momo's
-	// memory without bound.
-	defaultMaxConnections     = 128
-	defaultMaxSessionsPerConn = 64
+	// A session needs no stream, so momo's budget does not see it.
+	maxSessionsPerConn = 64
 
 	// connectionScope is the key of the connection-scoped stream, the one scope
 	// that is not a session.
@@ -33,27 +30,27 @@ var (
 type connectionManager struct {
 	mu   sync.Mutex
 	byID map[string]*conn
-	// max is how many connections this endpoint holds at once, and maxSessions how
-	// many sessions each of them hosts.
-	max         int
-	maxSessions int
+	// The sweep that makes room also drops a client which has initialized but not
+	// yet opened its stream, so reaching this has to stay rare. It comes from momo's
+	// budget, so it never refuses a connection the budget would still have held.
+	maxRecords int
 }
 
-func newConnectionManager(max, maxSessions int) *connectionManager {
-	return &connectionManager{byID: map[string]*conn{}, max: max, maxSessions: maxSessions}
+func newConnectionManager(maxRecords int) *connectionManager {
+	return &connectionManager{byID: map[string]*conn{}, maxRecords: maxRecords}
 }
 
 func (cm *connectionManager) create() (string, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if len(cm.byID) >= cm.max {
+	if len(cm.byID) >= cm.maxRecords {
 		cm.dropAbandoned()
 	}
-	if len(cm.byID) >= cm.max {
+	if len(cm.byID) >= cm.maxRecords {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
-	cm.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}, maxSessions: cm.maxSessions}
+	cm.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
 	return id, nil
 }
 
@@ -88,11 +85,10 @@ func (cm *connectionManager) remove(id string) *conn {
 // momo answers on, keyed by scope. Once closed it accepts nothing more, because
 // a request that resolved it a moment earlier still holds it.
 type conn struct {
-	mu          sync.Mutex
-	closed      bool
-	sessions    map[string]bool
-	maxSessions int
-	streams     map[string]*stream
+	mu       sync.Mutex
+	closed   bool
+	sessions map[string]bool
+	streams  map[string]*stream
 }
 
 func (c *conn) newSession() (string, error) {
@@ -101,7 +97,7 @@ func (c *conn) newSession() (string, error) {
 	if c.closed {
 		return "", errConnClosed
 	}
-	if len(c.sessions) >= c.maxSessions {
+	if len(c.sessions) >= maxSessionsPerConn {
 		return "", errTooManySessions
 	}
 	// ponytail: momo issues the session id, and today it is the only session id in

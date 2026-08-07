@@ -4,7 +4,6 @@
 package acp
 
 import (
-	"cmp"
 	"context"
 	"errors"
 
@@ -17,10 +16,8 @@ func init() {
 }
 
 type settings struct {
-	Token                    string `yaml:"token"`
-	Path                     string `yaml:"path"`
-	MaxConnections           int    `yaml:"max_connections"`
-	MaxSessionsPerConnection int    `yaml:"max_sessions_per_connection"`
+	Token string `yaml:"token"`
+	Path  string `yaml:"path"`
 }
 
 type acp struct {
@@ -32,8 +29,9 @@ func (a acp) Routes() []channel.Route { return []channel.Route{a.route} }
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
 // every request authenticated with the operator's bearer token. ctx is the
 // channel's lifetime: an SSE response never ends on its own, so the streams are
-// tied to it and end when momo starts shutting down.
-func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+// tied to it and end when momo starts shutting down. Every open stream takes a
+// slot from budget, momo's allowance of long-lived connections.
+func New(ctx context.Context, decode channel.Decoder, h core.Handler, budget *channel.ConnectionBudget) (channel.Channel, error) {
 	s := settings{Path: "/acp"}
 	if err := decode(&s); err != nil {
 		return nil, err
@@ -41,18 +39,8 @@ func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.C
 	if s.Token == "" {
 		return nil, errors.New("token is required")
 	}
-	if s.MaxConnections < 0 {
-		return nil, errors.New("max_connections cannot be negative")
-	}
-	if s.MaxSessionsPerConnection < 0 {
-		return nil, errors.New("max_sessions_per_connection cannot be negative")
-	}
-	conns := newConnectionManager(
-		cmp.Or(s.MaxConnections, defaultMaxConnections),
-		cmp.Or(s.MaxSessionsPerConnection, defaultMaxSessionsPerConn),
-	)
 	return acp{route: channel.Route{
 		Path:    s.Path,
-		Handler: &handler{token: s.Token, core: h, conns: conns, life: ctx},
+		Handler: &handler{token: s.Token, core: h, conns: newConnectionManager(budget.Max()), budget: budget, life: ctx},
 	}}, nil
 }

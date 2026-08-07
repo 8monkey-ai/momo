@@ -33,8 +33,10 @@ type Decoder func(v any) error
 // lifetime: it is cancelled when momo begins shutting down, before the server
 // drains its in-flight requests, so a channel holding something that does not
 // end on its own — a response, a goroutine, an open socket — lets go of it
-// there. A channel that holds nothing long-lived ignores it.
-type Factory func(ctx context.Context, decode Decoder, h core.Handler) (Channel, error)
+// there. A channel that holds nothing long-lived ignores it. budget is momo's
+// shared allowance of long-lived connections: a channel takes a slot from it for
+// every response it holds open, and a channel that holds none ignores it too.
+type Factory func(ctx context.Context, decode Decoder, h core.Handler, budget *ConnectionBudget) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -54,14 +56,14 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(ctx context.Context, configs map[string]Decoder, h core.Handler) ([]Instance, error) {
+func Build(ctx context.Context, configs map[string]Decoder, h core.Handler, budget *ConnectionBudget) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(ctx, configs[name], h)
+		c, err := f(ctx, configs[name], h, budget)
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

@@ -64,6 +64,11 @@ rebuild.
 # Address momo listens on. Default: ":8080"
 listen: ":8080"
 
+# Long-lived connections momo holds open at once, across all channels. In ACP
+# each open stream — the connection-scoped one and one per session — counts as
+# one. Default: 128
+max_connections: 128
+
 # How long momo waits, each a duration such as "30s" or "2m".
 timeouts:
   # Reading a request's headers. Default: "10s"
@@ -91,11 +96,6 @@ channels:
     token: "a long random string you generate"
     # Path momo serves the ACP endpoint on. Default: "/acp"
     path: "/acp"
-    # Connections momo holds at once. A client that reconnects without sending
-    # DELETE does not hold its slot once it stops listening. Default: 128
-    max_connections: 128
-    # Sessions one connection may hold at once. Default: 64
-    max_sessions_per_connection: 64
 ```
 
 Only the secrets are required. Every other setting has a default, so the shortest working

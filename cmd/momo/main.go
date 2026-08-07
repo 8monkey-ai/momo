@@ -43,7 +43,7 @@ func run(log *slog.Logger) error {
 
 	// The channels' lifetime is this context: the signal that starts the shutdown
 	// is what makes them let go of what they hold.
-	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log})
+	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log}, channel.NewConnectionBudget(cfg.MaxConnections))
 	if err != nil {
 		return err
 	}
