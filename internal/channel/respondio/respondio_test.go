@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -187,7 +186,7 @@ func TestNewRoutes(t *testing.T) {
 		s.SentSecret = "b"
 		return nil
 	}
-	c, err := New(t.Context(), yaml, capture{}, channel.NewConnectionBudget(1))
+	c, err := New(t.Context(), yaml, capture{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -211,7 +210,7 @@ func TestNewRequiresBothSecrets(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(t.Context(), decode, capture{}, channel.NewConnectionBudget(1)); err == nil {
+			if _, err := New(t.Context(), decode, capture{}); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})

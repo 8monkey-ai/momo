@@ -58,14 +58,10 @@ type peer struct {
 	calls chan call
 }
 
-// defaultBudget mirrors the allowance config applies when the operator's file
-// says nothing.
-const defaultBudget = 128
-
-func newChannel(t *testing.T, life context.Context, budget *channel.ConnectionBudget) (channel.Channel, chan call) {
+func newChannel(t *testing.T, life context.Context) (channel.Channel, chan call) {
 	t.Helper()
 	calls := make(chan call, 4)
-	c, err := New(life, with(settings{Token: token}), capture{calls: calls}, budget)
+	c, err := New(life, with(settings{Token: token}), capture{calls: calls})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -85,13 +81,7 @@ func peerAt(t *testing.T, url string, c channel.Channel, calls chan call) *peer 
 
 func newPeer(t *testing.T, life context.Context) *peer {
 	t.Helper()
-	c, calls := newChannel(t, life, channel.NewConnectionBudget(defaultBudget))
-	return served(t, c, calls)
-}
-
-func newPeerWithBudget(t *testing.T, budget *channel.ConnectionBudget) *peer {
-	t.Helper()
-	c, calls := newChannel(t, t.Context(), budget)
+	c, calls := newChannel(t, life)
 	return served(t, c, calls)
 }
 
@@ -356,7 +346,7 @@ func TestPostRejectsAnythingButJSON(t *testing.T) {
 // A request that resolved its connection just before the connection was closed
 // still holds it, and must not be able to open a stream nothing will ever close.
 func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
-	cm := newConnectionManager(defaultBudget)
+	cm := newConnectionManager()
 	id, err := cm.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -376,7 +366,7 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 // fill opens as many connections as the manager holds, each listening or not as asked.
 func fill(t *testing.T, cm *connectionManager, listening bool) {
 	t.Helper()
-	for range cm.maxRecords {
+	for range maxConnectionRecords {
 		id, err := cm.create()
 		if err != nil {
 			t.Fatalf("create: %v", err)
@@ -390,7 +380,7 @@ func fill(t *testing.T, cm *connectionManager, listening bool) {
 }
 
 func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
-	cm := newConnectionManager(defaultBudget)
+	cm := newConnectionManager()
 	fill(t, cm, true)
 	if _, err := cm.create(); !errors.Is(err, errTooManyConns) {
 		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
@@ -400,7 +390,7 @@ func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
 // A client that goes away without sending DELETE must not hold its slot until
 // momo restarts.
 func TestAbandonedConnectionsMakeRoom(t *testing.T) {
-	cm := newConnectionManager(defaultBudget)
+	cm := newConnectionManager()
 	fill(t, cm, false)
 	if _, err := cm.create(); err != nil {
 		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
@@ -413,7 +403,7 @@ func TestAbandonedConnectionsMakeRoom(t *testing.T) {
 }
 
 func TestSessionsAreCappedPerConnection(t *testing.T) {
-	cm := newConnectionManager(defaultBudget)
+	cm := newConnectionManager()
 	id, err := cm.create()
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -678,59 +668,10 @@ func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
 	}
 }
 
-func TestTheConnectionCeilingFollowsMomosBudget(t *testing.T) {
-	c, err := New(t.Context(), with(settings{Token: token}), nil, channel.NewConnectionBudget(512))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if got := c.Routes()[0].Handler.(*handler).conns.maxRecords; got != 512 {
-		t.Errorf("records = %d, want the budget's 512", got)
-	}
-}
-
 func TestTokenIsRequired(t *testing.T) {
-	if _, err := New(t.Context(), with(settings{}), nil, channel.NewConnectionBudget(defaultBudget)); err == nil {
+	if _, err := New(t.Context(), with(settings{}), nil); err == nil {
 		t.Fatal("New succeeded without a token, want an error")
 	}
-}
-
-func TestAStreamPastMomosBudgetIsRefusedUntilOneEnds(t *testing.T) {
-	p := newPeerWithBudget(t, channel.NewConnectionBudget(1))
-	id := p.initialize()
-	connStream := p.stream(map[string]string{connectionHeader: id})
-	sessionID := p.newSession(id, connStream)
-
-	resp := p.do(http.MethodGet, "", map[string]string{
-		"Authorization":  "Bearer " + token,
-		"Accept":         sseMediaType,
-		connectionHeader: id,
-		sessionHeader:    sessionID,
-	})
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("second GET = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-	if got := resp.Header.Get("Retry-After"); got == "" {
-		t.Error("no Retry-After, want the client told when to come back")
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if !strings.Contains(string(body), "connection limit") {
-		t.Errorf("second GET said %q, want it to name momo's limit", body)
-	}
-
-	hdr := map[string]string{"Authorization": "Bearer " + token, connectionHeader: id}
-	if got := p.do(http.MethodDelete, "", hdr).StatusCode; got != http.StatusNoContent {
-		t.Fatalf("DELETE = %d, want %d", got, http.StatusNoContent)
-	}
-	select {
-	case <-connStream.ended:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the stream stayed open after DELETE")
-	}
-	// stream fails the test unless the GET is answered with the stream.
-	p.stream(map[string]string{connectionHeader: p.initialize()})
 }
 
 // A message momo answers needs an id to answer under: with none, the answer

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/8monkey-ai/momo/internal/channel"
 )
 
 // readTimeout stands in for the read timeout momo's server runs with. A stream
@@ -21,7 +19,7 @@ const readTimeout = 200 * time.Millisecond
 // connection it will never be answered on.
 func TestInitializeIsRefusedOnceMomoIsShuttingDown(t *testing.T) {
 	life, stopping := context.WithCancel(context.Background())
-	c, calls := newChannel(t, life, channel.NewConnectionBudget(defaultBudget))
+	c, calls := newChannel(t, life)
 	srv := httptest.NewServer(c.Routes()[0].Handler)
 	t.Cleanup(srv.Close)
 	p := peerAt(t, srv.URL, c, calls)
@@ -43,7 +41,7 @@ func TestInitializeIsRefusedOnceMomoIsShuttingDown(t *testing.T) {
 
 func TestShutdownClosesStreamsInsteadOfWaitingForThem(t *testing.T) {
 	life, stopping := context.WithCancel(context.Background())
-	c, calls := newChannel(t, life, channel.NewConnectionBudget(defaultBudget))
+	c, calls := newChannel(t, life)
 	srv := &http.Server{
 		Handler:           c.Routes()[0].Handler,
 		ReadHeaderTimeout: readTimeout,

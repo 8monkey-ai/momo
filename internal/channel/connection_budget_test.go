@@ -25,9 +25,3 @@ func TestBudgetHoldsExactlyItsMaximum(t *testing.T) {
 		t.Fatal("a second acquire succeeded, want only one slot freed")
 	}
 }
-
-func TestBudgetReportsItsMaximum(t *testing.T) {
-	if got := NewConnectionBudget(7).Max(); got != 7 {
-		t.Errorf("Max = %d, want 7", got)
-	}
-}

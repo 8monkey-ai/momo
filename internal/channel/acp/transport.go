@@ -12,7 +12,6 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
-	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -33,10 +32,9 @@ const (
 // an HTTP status; a failure of a message momo accepted is answered with a
 // JSON-RPC error on the stream that message's response belongs to.
 type handler struct {
-	token  string
-	core   core.Handler
-	conns  *connectionManager
-	budget *channel.ConnectionBudget
+	token string
+	core  core.Handler
+	conns *connectionManager
 	// life is the channel's lifetime: it is done once momo starts shutting down,
 	// which ends the open streams and refuses new connections.
 	life context.Context
@@ -158,13 +156,6 @@ func (h *handler) openStream(w http.ResponseWriter, r *http.Request) {
 		rj.write(w)
 		return
 	}
-	release, ok := h.budget.Acquire()
-	if !ok {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "momo is at its connection limit", http.StatusServiceUnavailable)
-		return
-	}
-	defer release()
 	s := newStream()
 	if err := c.attach(scope, s); err != nil {
 		// A scope already streaming is a conflict; anything else means the connection

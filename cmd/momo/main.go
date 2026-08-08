@@ -43,11 +43,12 @@ func run(log *slog.Logger) error {
 
 	// The channels' lifetime is this context: the signal that starts the shutdown
 	// is what makes them let go of what they hold.
-	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log}, channel.NewConnectionBudget(cfg.MaxConnections))
+	budget := channel.NewConnectionBudget(cfg.MaxConnections)
+	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log})
 	if err != nil {
 		return err
 	}
-	mux, err := buildMux(instances, log)
+	mux, err := buildMux(instances, budget, log)
 	if err != nil {
 		return err
 	}
@@ -61,7 +62,7 @@ func run(log *slog.Logger) error {
 	}, cfg.Timeouts.Shutdown)
 }
 
-func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, error) {
+func buildMux(instances []channel.Instance, budget *channel.ConnectionBudget, log *slog.Logger) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, _ *http.Request) {
 		// Nothing can be done if the monitor hung up mid-response.
@@ -77,6 +78,7 @@ func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, e
 				return nil, fmt.Errorf("channel %q: path %q is already served", in.Name, route.Path)
 			}
 			served[route.Path] = true
+			route.Handler = budgeted(budget, route.Handler)
 			if err := handle(mux, route); err != nil {
 				return nil, fmt.Errorf("channel %q: %w", in.Name, err)
 			}
@@ -85,6 +87,23 @@ func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, e
 		log.Info("channel ready", "channel", in.Name, "paths", paths)
 	}
 	return mux, nil
+}
+
+// budgeted holds a slot for the whole request, so no channel can keep a response
+// open without one. The ResponseWriter is passed through untouched: ACP's
+// streaming reaches Flush and SetWriteDeadline through
+// http.NewResponseController, which fails if anything wraps the writer.
+func budgeted(budget *channel.ConnectionBudget, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		release, ok := budget.Acquire()
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "momo is at its connection limit", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handle registers one route, turning the panic http.ServeMux raises on a path

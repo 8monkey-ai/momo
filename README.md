@@ -65,9 +65,9 @@ rebuild.
 # Address momo listens on. Default: ":8080"
 listen: ":8080"
 
-# Long-lived connections momo holds open at once, across all channels. In ACP
-# each open stream — the connection-scoped one and one per session — counts as
-# one. Default: 128
+# Requests momo holds open at once, across all channels. An ACP stream holds one
+# for as long as its client listens; a webhook holds one for the milliseconds it
+# takes to answer. /healthz is never refused. Default: 128
 max_connections: 128
 
 # How long momo waits, each a duration such as "30s" or "2m".

@@ -26,7 +26,7 @@ const (
 	defaultShutdownTimeout   = 20 * time.Second
 )
 
-// The long-lived connections momo holds open at once when the file says nothing.
+// The requests momo holds open at once when the file says nothing.
 const defaultMaxConnections = 128
 
 // Config is the configuration momo runs with. Channel blocks stay undecoded so

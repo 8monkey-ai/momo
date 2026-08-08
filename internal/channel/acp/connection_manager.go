@@ -10,6 +10,12 @@ const (
 	// A session needs no stream, so momo's budget does not see it.
 	maxSessionsPerConn = 64
 
+	// maxConnectionRecords is where momo sweeps the connections nobody is listening
+	// to, so a client that reconnects without sending DELETE does not accumulate
+	// them. The sweep also drops a client between initialize and its first stream, so
+	// reaching it has to stay rare. It is not momo's cap on what it serves.
+	maxConnectionRecords = 4096
+
 	// connectionScope is the key of the connection-scoped stream, the one scope
 	// that is not a session.
 	connectionScope = ""
@@ -30,23 +36,19 @@ var (
 type connectionManager struct {
 	mu   sync.Mutex
 	byID map[string]*conn
-	// The sweep that makes room also drops a client which has initialized but not
-	// yet opened its stream, so reaching this has to stay rare. It comes from momo's
-	// budget, so it never refuses a connection the budget would still have held.
-	maxRecords int
 }
 
-func newConnectionManager(maxRecords int) *connectionManager {
-	return &connectionManager{byID: map[string]*conn{}, maxRecords: maxRecords}
+func newConnectionManager() *connectionManager {
+	return &connectionManager{byID: map[string]*conn{}}
 }
 
 func (cm *connectionManager) create() (string, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if len(cm.byID) >= cm.maxRecords {
+	if len(cm.byID) >= maxConnectionRecords {
 		cm.dropAbandoned()
 	}
-	if len(cm.byID) >= cm.maxRecords {
+	if len(cm.byID) >= maxConnectionRecords {
 		return "", errTooManyConns
 	}
 	id := rand.Text()
