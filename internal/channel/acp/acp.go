@@ -41,6 +41,10 @@ func New(lifetime context.Context, decode channel.Decoder, h core.Handler) (chan
 	if s.Token == "" {
 		return nil, errors.New("token is required")
 	}
+	// A non-positive grace would panic the sweep's ticker.
+	if s.ConnectionGrace <= 0 {
+		return nil, errors.New("connection_grace must be positive")
+	}
 	conns := newConnectionManager(s.ConnectionGrace, time.Now)
 	go conns.run(lifetime)
 	return acp{routes: []channel.Route{

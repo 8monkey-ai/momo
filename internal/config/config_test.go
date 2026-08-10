@@ -91,6 +91,8 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 		body string
 	}{
 		{name: "misspelled setting", body: "listten: \":9000\"\n"},
+		// It would reach the listener as a channel of negative capacity.
+		{name: "negative max_connections", body: "max_connections: -1\n"},
 		{name: "not yaml", body: "listen: \":9000\"\n  channels:\n"},
 		// Only the first document is used, so a second one would be dropped in silence.
 		{name: "second document", body: "listen: \":8080\"\n---\nlisten: \":9999\"\n"},

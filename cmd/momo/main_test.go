@@ -175,7 +175,7 @@ func open(endpoint, connID string) (*http.Response, error) {
 	return resp, nil
 }
 
-func TestListenerRefusesPastTheConfiguredMaximum(t *testing.T) {
+func TestListenerStopsAcceptingPastTheConfiguredMaximum(t *testing.T) {
 	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nmax_connections: 1\n")
 	l, err := listen(cfg)
 	if err != nil {

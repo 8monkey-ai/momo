@@ -20,8 +20,13 @@ func newStream() *stream {
 	return &stream{frames: make(chan []byte, 32), closed: make(chan struct{})}
 }
 
-// send never blocks: this transport has no resumption, so a frame a listener
-// cannot keep up with is lost exactly as one emitted while nobody listened.
+// send never blocks: the POST that produced this frame must not be held up by a
+// client that is slow to read, and blocking one would stall unrelated requests.
+//
+// ponytail: a listener that falls 32 frames behind loses a response it is still
+// waiting for, which a disconnected client at least learns from the closed
+// stream. Close the stream on overflow, so the client reconnects instead of
+// waiting, once a turn emits more than one frame per request.
 func (s *stream) send(frame []byte) {
 	select {
 	case s.frames <- frame:

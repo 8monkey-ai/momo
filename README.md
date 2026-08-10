@@ -64,8 +64,9 @@ rebuild.
 ```yaml
 # Address momo listens on. Default: ":8080"
 listen: ":8080"
-# Connections momo serves at once. Refused on accept past this number, so an
-# ACP client holding a stream open for hours counts against it. Default: 1024
+# Connections momo serves at once. Past this number a new connection waits until
+# a slot opens, so an ACP client holding a stream open for hours counts against
+# it. Default: 1024
 max_connections: 1024
 # How long a request may take to send its headers. Default: "10s"
 read_header_timeout: "10s"
@@ -95,12 +96,13 @@ channels:
     # Path momo serves the ACP endpoint on. Default: "/v1/acp"
     path: "/v1/acp"
     # How long a connection nobody is listening to is kept before momo drops it.
-    # Default: "5m"
+    # Must be positive. Default: "5m"
     connection_grace: "5m"
 ```
 
-Only the two signing keys are required. Every other setting has a default, so the shortest
-working file is:
+Each channel requires only its credentials: the two signing keys for respond.io, the token
+for ACP. Every other setting has a default, so the shortest working file for respond.io
+alone is:
 
 ```yaml
 channels:
@@ -159,7 +161,8 @@ momo prompts, and each prompt is a message from a contact.
 
 Add the block with a token, restart momo, and hand whoever runs the client two things:
 
-- the URL, `https://your-domain.example/v1/acp`
+- the URL, `https://your-domain.example` followed by the configured `path` (default
+  `/v1/acp`)
 - the token, which the client sends as `Authorization: Bearer <token>` on every request
 
 Requests without the token, or with the wrong one, are answered `401` and get no further.

@@ -50,8 +50,11 @@ func (e *endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *endpoint) authorized(r *http.Request) bool {
-	presented, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return bearer && subtle.ConstantTimeCompare([]byte(presented), []byte(e.token)) == 1
+	// The scheme token is case-insensitive per RFC 7235, and clients do send
+	// "bearer".
+	scheme, presented, found := strings.Cut(r.Header.Get("Authorization"), " ")
+	return found && strings.EqualFold(scheme, "Bearer") &&
+		subtle.ConstantTimeCompare([]byte(presented), []byte(e.token)) == 1
 }
 
 func (e *endpoint) post(w http.ResponseWriter, r *http.Request) {

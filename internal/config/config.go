@@ -67,6 +67,10 @@ func parse(raw []byte) (*Config, error) {
 		// A read deadline set at the start of a request expires under a stream the
 		// handler is still writing, so nothing bounds a request's body in time by
 		// default; a channel bounds it in size instead.
+		//
+		// future: a body sent slowly still holds a listener slot until
+		// max_connections is reached. Bounding it needs a per-request deadline in the
+		// channel that reads the body, not a deadline on every response.
 		ReadTimeout:     duration(f.ReadTimeout, 0),
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
@@ -77,6 +81,10 @@ func parse(raw []byte) (*Config, error) {
 	}
 	if cfg.MaxConnections == 0 {
 		cfg.MaxConnections = 1024
+	}
+	// A negative limit reaches the listener as a channel of negative capacity.
+	if cfg.MaxConnections < 0 {
+		return nil, errors.New("invalid configuration: max_connections cannot be negative")
 	}
 	for name, node := range f.Channels {
 		cfg.Channels[name] = decoderFor(node)

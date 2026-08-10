@@ -238,6 +238,25 @@ func TestTokenIsRequiredOnEveryMethod(t *testing.T) {
 	}
 }
 
+func TestTokenSchemeIsCaseInsensitive(t *testing.T) {
+	// RFC 7235 makes the scheme token case-insensitive, and clients do send it
+	// lowercased.
+	h := newHarness(t)
+	r, err := http.NewRequest(http.MethodPost, h.url,
+		strings.NewReader(rpc(1, methodInitialize, "{}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "bearer "+token)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	status(t, resp, http.StatusOK)
+}
+
 func TestContentNegotiationRejections(t *testing.T) {
 	h := newHarness(t)
 	t.Run("POST without json content type", func(t *testing.T) {
@@ -495,9 +514,25 @@ func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
 		connID: connID, sessionID: sessionID}), http.StatusNotFound)
 }
 
-func TestNewRequiresAToken(t *testing.T) {
-	if _, err := New(context.Background(), func(any) error { return nil }, capture{}); err == nil {
-		t.Fatal("New succeeded without a token, want an error")
+func TestNewRejectsUnusableSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(*settings)
+	}{
+		{name: "no token", apply: func(*settings) {}},
+		// A non-positive grace would panic the sweep's ticker.
+		{name: "zero grace", apply: func(s *settings) { s.Token = token; s.ConnectionGrace = 0 }},
+		{name: "negative grace", apply: func(s *settings) { s.Token = token; s.ConnectionGrace = -time.Minute }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decode := func(v any) error {
+				tc.apply(v.(*settings))
+				return nil
+			}
+			if _, err := New(context.Background(), decode, capture{}); err == nil {
+				t.Fatal("New succeeded, want an error naming the unusable setting")
+			}
+		})
 	}
 }
 

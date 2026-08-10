@@ -4,8 +4,8 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
+	"strings"
 )
 
 // ContentBlock is one block of a message's content, in ACP v1's shape: a
@@ -52,17 +52,24 @@ type LogHandler struct {
 }
 
 func (h LogHandler) Received(_ context.Context, m Message) {
-	h.Log.Info("message received", "contact", m.Contact, "content", content(m))
+	h.Log.Info("message received", attrs(m)...)
 }
 
 func (h LogHandler) Sent(_ context.Context, m Message) {
-	h.Log.Info("message sent", "contact", m.Contact, "content", content(m))
+	h.Log.Info("message sent", attrs(m)...)
 }
 
-func content(m Message) string {
-	b, err := json.Marshal(m.Content)
-	if err != nil {
-		return ""
+// attrs reports a message's block types and its text, and never the base64 data
+// an image, audio or blob block carries: one of those would write megabytes into
+// a single log record.
+func attrs(m Message) []any {
+	types := make([]string, 0, len(m.Content))
+	var text []string
+	for _, block := range m.Content {
+		types = append(types, block.Type)
+		if block.Text != "" {
+			text = append(text, block.Text)
+		}
 	}
-	return string(b)
+	return []any{"contact", m.Contact, "blocks", types, "text", strings.Join(text, " ")}
 }
