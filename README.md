@@ -192,9 +192,9 @@ The client connects like this:
 5. `POST` `session/prompt` with both headers. The prompt reaches momo, and the reply and
    the response arrive on that session's stream.
 
-momo answers a prompt on the session's own stream: one `session/update` notification with
-an `agent_message_chunk` per content block, and then the `session/prompt` response with
-`stopReason: "end_turn"`, always after the content it is ending.
+momo answers a prompt on the session's own stream: one `session/update` notification per
+content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
+response with `stopReason: "end_turn"`, always after the content it is ending.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
