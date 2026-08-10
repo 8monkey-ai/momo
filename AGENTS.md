@@ -12,14 +12,18 @@ Apply to every non-trivial change. These constrain design, not formatting.
 - Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection. Omit steps that aren't needed: do not compute, read, or store values that nothing depends on. Prefer simple, correct approaches over premature optimization when the input is small.
 - Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
 - Keep components modular and concerns clearly separated.
-- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
-- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+- Before writing code by hand, check whether a language built-in, the standard library, an installed dependency, or a well-maintained package already does it. Read its docs and types instead of assuming what it cannot do.
+- Adding a dependency to delete boilerplate is a good trade, even when the hand-written version would only be a few lines. Small amounts of custom code still have to be read, tested, and maintained; a library that is already solving this problem for others does not.
+- Question every hardcoded module-level constant. If someone deploying or running the system might reasonably want a different value, make it a configuration option with the current value as the default.
+- Question whether a new type, wrapper, or class is needed at all. If the same behavior is expressible with a plain value, an existing type, or a function, do that instead. Introduce a struct only when it removes real ceremony rather than adding it.
 - Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
 - Write the test first for the observable behavior. It must fail for a plausible wrong implementation. Then write only enough production code to pass it.
+- Tests state expected values as literals. A test that compares against the production constant passes even when the value is wrong.
 - Work in small, reviewable increments. Do not mix behavior change with refactoring in the same step.
 - Names state intent. Rename when a better name clarifies a responsibility.
 - Keep comments minimal. Code should be self-explanatory. Comment only to explain why, not what. If code needs a comment to be understood, rewrite it to be clearer instead. Aim for the smallest changeset that solves the problem.
-- Remove duplication of knowledge, not duplication of text. Coincidentally similar code with different reasons to change stays separate.
+- Repeating text is not the problem DRY solves. Before finishing a change, look for the same decision written in more than one place and unify it: if changing it in one place and not the other would be a bug, it belongs in one place. Code that merely looks alike, but changes for different reasons, stays separate.
+- Do not name a constant for a value used in one place. A literal at its one call site is clearer than a name defined elsewhere. Introduce the constant on the second use, or when the name explains something the value cannot.
 - Keep functions small enough to hold in one's head and files small enough to review in one sitting. When a function accumulates branches or a file outgrows a review-sized unit, split along responsibility lines, not by line count.
 - Do not export symbols that are only used internally.
 - Let the language's type inference do the work where it can. Omit explicit type annotations when inference yields the same type.
@@ -28,6 +32,10 @@ Apply to every non-trivial change. These constrain design, not formatting.
 - Keep IO-near adapters as thin shells with no decision logic, so core behavior is testable without UI, network, filesystem, or devices.
 - Modules expose only what callers need. Representation, IO details, and invariant enforcement stay hidden.
 - Do not create import cycles.
+
+## Structure
+- Treat the current file and directory layout as a proposal, not a given. When a change makes the existing structure awkward, say so and propose a better one instead of forcing the change into the wrong place.
+- Do not reorganize the project without approval. Suggest the move, name what it improves, and wait.
 
 ## Verification
 Nothing is done until it has been reviewed and checked. Review first, then run the checks.
