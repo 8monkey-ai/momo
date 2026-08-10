@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"maps"
 	"net/http"
@@ -347,10 +346,7 @@ func TestPostRejectsAnythingButJSON(t *testing.T) {
 // still holds it, and must not be able to open a stream nothing will ever close.
 func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 	cm := newConnectionManager()
-	id, err := cm.create()
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	id := cm.create()
 	c := cm.lookup(id)
 	// Closed the way DELETE closes it.
 	cm.remove(id)
@@ -363,59 +359,26 @@ func TestAClosedConnectionAcceptsNothingMore(t *testing.T) {
 	}
 }
 
-// fill opens as many connections as the manager holds, each listening or not as asked.
-func fill(t *testing.T, cm *connectionManager, listening bool) {
-	t.Helper()
-	for range maxConnectionRecords {
-		id, err := cm.create()
-		if err != nil {
-			t.Fatalf("create: %v", err)
-		}
-		if listening {
-			if err := cm.lookup(id).attach(connectionScope, newStream()); err != nil {
-				t.Fatalf("attach: %v", err)
-			}
-		}
-	}
-}
-
-func TestConnectionsAreCappedWhileClientsAreListening(t *testing.T) {
+func TestAbandonedConnectionsAreSweptOnCreate(t *testing.T) {
 	cm := newConnectionManager()
-	fill(t, cm, true)
-	if _, err := cm.create(); !errors.Is(err, errTooManyConns) {
-		t.Fatalf("create past the cap = %v, want %v", err, errTooManyConns)
+	listening, idle, fresh := cm.create(), cm.create(), cm.create()
+	if err := cm.lookup(listening).attach(connectionScope, newStream()); err != nil {
+		t.Fatalf("attach: %v", err)
 	}
-}
+	// Only the connection nobody has listened to for the grace period is swept.
+	for _, id := range []string{listening, idle} {
+		cm.lookup(id).idleSince = time.Now().Add(-2 * abandonAfter)
+	}
 
-// A client that goes away without sending DELETE must not hold its slot until
-// momo restarts.
-func TestAbandonedConnectionsMakeRoom(t *testing.T) {
-	cm := newConnectionManager()
-	fill(t, cm, false)
-	if _, err := cm.create(); err != nil {
-		t.Fatalf("create past the cap = %v, want the abandoned connections dropped", err)
+	cm.create()
+	if cm.lookup(idle) != nil {
+		t.Error("the abandoned connection survived, want it swept")
 	}
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	if len(cm.byID) != 1 {
-		t.Errorf("connections = %d, want only the new one", len(cm.byID))
+	if cm.lookup(listening) == nil {
+		t.Error("a listening connection was swept, want it kept")
 	}
-}
-
-func TestSessionsAreCappedPerConnection(t *testing.T) {
-	cm := newConnectionManager()
-	id, err := cm.create()
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	c := cm.lookup(id)
-	for range maxSessionsPerConn {
-		if _, err := c.newSession(); err != nil {
-			t.Fatalf("newSession: %v", err)
-		}
-	}
-	if _, err := c.newSession(); !errors.Is(err, errTooManySessions) {
-		t.Fatalf("newSession past the cap = %v, want %v", err, errTooManySessions)
+	if cm.lookup(fresh) == nil {
+		t.Error("a connection within its grace period was swept, want it kept")
 	}
 }
 

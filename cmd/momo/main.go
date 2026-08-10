@@ -6,11 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/netutil"
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
@@ -43,18 +46,21 @@ func run(log *slog.Logger) error {
 
 	// The channels' lifetime is this context: the signal that starts the shutdown
 	// is what makes them let go of what they hold.
-	budget := channel.NewConnectionBudget(cfg.MaxConnections)
 	instances, err := channel.Build(ctx, cfg.Channels, core.LogHandler{Log: log})
 	if err != nil {
 		return err
 	}
-	mux, err := buildMux(instances, budget, log)
+	mux, err := buildMux(instances, log)
 	if err != nil {
 		return err
 	}
 
-	return serve(ctx, log, &http.Server{
-		Addr:              cfg.Listen,
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return err
+	}
+
+	return serve(ctx, log, netutil.LimitListener(ln, cfg.MaxConnections), &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: cfg.Timeouts.ReadHeader,
 		ReadTimeout:       cfg.Timeouts.Read,
@@ -62,7 +68,7 @@ func run(log *slog.Logger) error {
 	}, cfg.Timeouts.Shutdown)
 }
 
-func buildMux(instances []channel.Instance, budget *channel.ConnectionBudget, log *slog.Logger) (*http.ServeMux, error) {
+func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, _ *http.Request) {
 		// Nothing can be done if the monitor hung up mid-response.
@@ -78,7 +84,6 @@ func buildMux(instances []channel.Instance, budget *channel.ConnectionBudget, lo
 				return nil, fmt.Errorf("channel %q: path %q is already served", in.Name, route.Path)
 			}
 			served[route.Path] = true
-			route.Handler = budgeted(budget, route.Handler)
 			if err := handle(mux, route); err != nil {
 				return nil, fmt.Errorf("channel %q: %w", in.Name, err)
 			}
@@ -87,23 +92,6 @@ func buildMux(instances []channel.Instance, budget *channel.ConnectionBudget, lo
 		log.Info("channel ready", "channel", in.Name, "paths", paths)
 	}
 	return mux, nil
-}
-
-// budgeted holds a slot for the whole request, so no channel can keep a response
-// open without one. The ResponseWriter is passed through untouched: ACP's
-// streaming reaches Flush and SetWriteDeadline through
-// http.NewResponseController, which fails if anything wraps the writer.
-func budgeted(budget *channel.ConnectionBudget, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		release, ok := budget.Acquire()
-		if !ok {
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "momo is at its connection limit", http.StatusServiceUnavailable)
-			return
-		}
-		defer release()
-		next.ServeHTTP(w, r)
-	})
 }
 
 // handle registers one route, turning the panic http.ServeMux raises on a path
@@ -119,10 +107,10 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(ctx context.Context, log *slog.Logger, srv *http.Server, shutdownTimeout time.Duration) error {
+func serve(ctx context.Context, log *slog.Logger, ln net.Listener, srv *http.Server, shutdownTimeout time.Duration) error {
 	failed := make(chan error, 1)
-	go func() { failed <- srv.ListenAndServe() }()
-	log.Info("🐒 momo listening", "address", srv.Addr, "health", healthPath)
+	go func() { failed <- srv.Serve(ln) }()
+	log.Info("🐒 momo listening", "address", ln.Addr(), "health", healthPath)
 
 	select {
 	case err := <-failed:

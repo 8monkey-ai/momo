@@ -4,17 +4,14 @@ import (
 	"crypto/rand"
 	"errors"
 	"sync"
+	"time"
 )
 
 const (
-	// A session needs no stream, so momo's budget does not see it.
-	maxSessionsPerConn = 64
-
-	// maxConnectionRecords is where momo sweeps the connections nobody is listening
-	// to, so a client that reconnects without sending DELETE does not accumulate
-	// them. The sweep also drops a client between initialize and its first stream, so
-	// reaching it has to stay rare. It is not momo's cap on what it serves.
-	maxConnectionRecords = 4096
+	// abandonAfter is how long a connection with nothing listening to it is kept
+	// before the sweep drops it. The grace covers the gap between initialize and
+	// the first stream, so a client that is still on its way is not dropped.
+	abandonAfter = 30 * time.Second
 
 	// connectionScope is the key of the connection-scoped stream, the one scope
 	// that is not a session.
@@ -22,10 +19,8 @@ const (
 )
 
 var (
-	errTooManyConns    = errors.New("too many open connections")
-	errTooManySessions = errors.New("too many sessions on this connection")
-	errConnClosed      = errors.New("connection closed")
-	errScopeTaken      = errors.New("a stream is already open for this scope")
+	errConnClosed = errors.New("connection closed")
+	errScopeTaken = errors.New("a stream is already open for this scope")
 )
 
 // connectionManager holds this endpoint's live ACP connections: the ids
@@ -42,24 +37,20 @@ func newConnectionManager() *connectionManager {
 	return &connectionManager{byID: map[string]*conn{}}
 }
 
-func (cm *connectionManager) create() (string, error) {
+func (cm *connectionManager) create() string {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if len(cm.byID) >= maxConnectionRecords {
-		cm.dropAbandoned()
-	}
-	if len(cm.byID) >= maxConnectionRecords {
-		return "", errTooManyConns
-	}
+	cm.dropAbandoned()
 	id := rand.Text()
-	cm.byID[id] = &conn{sessions: map[string]bool{}, streams: map[string]*stream{}}
-	return id, nil
+	cm.byID[id] = &conn{idleSince: time.Now(), sessions: map[string]bool{}, streams: map[string]*stream{}}
+	return id
 }
 
-// dropAbandoned frees the connections nobody is listening to, so a client that
-// went away without sending DELETE does not hold a slot until momo restarts. A
-// client holds a stream for as long as it means to hear from momo; one caught
-// between streams is told its connection is unknown and initializes again.
+// dropAbandoned frees the connections nobody has been listening to for
+// abandonAfter, so a client that went away without sending DELETE does not hold
+// its record until momo restarts. A client holds a stream for as long as it means
+// to hear from momo; one dropped between streams is told its connection is
+// unknown and initializes again.
 func (cm *connectionManager) dropAbandoned() {
 	for id, c := range cm.byID {
 		if c.abandoned() {
@@ -87,10 +78,11 @@ func (cm *connectionManager) remove(id string) *conn {
 // momo answers on, keyed by scope. Once closed it accepts nothing more, because
 // a request that resolved it a moment earlier still holds it.
 type conn struct {
-	mu       sync.Mutex
-	closed   bool
-	sessions map[string]bool
-	streams  map[string]*stream
+	mu        sync.Mutex
+	closed    bool
+	idleSince time.Time
+	sessions  map[string]bool
+	streams   map[string]*stream
 }
 
 func (c *conn) newSession() (string, error) {
@@ -98,9 +90,6 @@ func (c *conn) newSession() (string, error) {
 	defer c.mu.Unlock()
 	if c.closed {
 		return "", errConnClosed
-	}
-	if len(c.sessions) >= maxSessionsPerConn {
-		return "", errTooManySessions
 	}
 	// ponytail: momo issues the session id, and today it is the only session id in
 	// play. Once the agent harness lands, the upstream agent will issue one of its
@@ -117,11 +106,12 @@ func (c *conn) hasSession(id string) bool {
 	return c.sessions[id]
 }
 
-// abandoned reports whether nothing is listening to this connection.
+// abandoned reports whether nothing has been listening to this connection for
+// abandonAfter.
 func (c *conn) abandoned() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.streams) == 0
+	return len(c.streams) == 0 && time.Since(c.idleSince) > abandonAfter
 }
 
 // attach claims a scope for s. One writer per scope keeps routing unambiguous,
@@ -144,6 +134,7 @@ func (c *conn) detach(scope string, s *stream) {
 	defer c.mu.Unlock()
 	if c.streams[scope] == s {
 		delete(c.streams, scope)
+		c.idleSince = time.Now()
 	}
 }
 

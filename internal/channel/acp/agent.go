@@ -46,11 +46,7 @@ func (h *handler) initialize(w http.ResponseWriter, req jsonrpc2.Request) {
 		reject{http.StatusServiceUnavailable, "momo is shutting down"}.write(w)
 		return
 	}
-	id, err := h.conns.create()
-	if err != nil {
-		reject{http.StatusServiceUnavailable, err.Error()}.write(w)
-		return
-	}
+	id := h.conns.create()
 	result := initializeResult{ProtocolVersion: protocolVersion, AuthMethods: []any{}, ConnectionID: id}
 	result.AgentInfo.Name = "momo"
 	w.Header().Set(connectionHeader, id)

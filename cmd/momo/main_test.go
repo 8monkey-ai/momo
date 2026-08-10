@@ -44,7 +44,7 @@ func body(t *testing.T, mux *http.ServeMux, path string) string {
 }
 
 func TestMuxServesHealthAndChannelRoutes(t *testing.T) {
-	mux, err := buildMux([]channel.Instance{instance("stub", "/stub/in")}, channel.NewConnectionBudget(1), discard())
+	mux, err := buildMux([]channel.Instance{instance("stub", "/stub/in")}, discard())
 	if err != nil {
 		t.Fatalf("buildMux: %v", err)
 	}
@@ -56,45 +56,12 @@ func TestMuxServesHealthAndChannelRoutes(t *testing.T) {
 	}
 }
 
-func TestARequestPastMomosBudgetIsRefused(t *testing.T) {
-	budget := channel.NewConnectionBudget(1)
-	mux, err := buildMux([]channel.Instance{instance("stub", "/stub/in")}, budget, discard())
-	if err != nil {
-		t.Fatalf("buildMux: %v", err)
-	}
-	release, ok := budget.Acquire()
-	if !ok {
-		t.Fatal("the only slot was already taken")
-	}
-
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/stub/in", nil))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("GET /stub/in = %d, want %d", w.Code, http.StatusServiceUnavailable)
-	}
-	if got := w.Header().Get("Retry-After"); got == "" {
-		t.Error("no Retry-After, want the client told when to come back")
-	}
-	if got := w.Body.String(); !strings.Contains(got, "connection limit") {
-		t.Errorf("GET /stub/in said %q, want it to name momo's limit", got)
-	}
-	// The monitor has to get an answer while the only slot is taken.
-	if got := body(t, mux, healthPath); got != "ok" {
-		t.Errorf("%s answered %q under the limit, want \"ok\"", healthPath, got)
-	}
-
-	release()
-	if got := body(t, mux, "/stub/in"); got != "/stub/in" {
-		t.Errorf("/stub/in answered %q once the slot was free, want the channel's own handler", got)
-	}
-}
-
 func TestMuxReportsAnUnusablePath(t *testing.T) {
 	// http.ServeMux panics on these, so a typo in the configuration file would
 	// take the process down instead of being reported.
 	for _, path := range []string{"", "/respondio/{", "/respond io"} {
 		t.Run(path, func(t *testing.T) {
-			if _, err := buildMux([]channel.Instance{instance("stub", path)}, channel.NewConnectionBudget(1), discard()); err == nil {
+			if _, err := buildMux([]channel.Instance{instance("stub", path)}, discard()); err == nil {
 				t.Fatalf("buildMux(%q) succeeded, want an error naming the path", path)
 			}
 		})
@@ -112,7 +79,7 @@ func TestMuxReportsAPathServedTwice(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A duplicate would panic inside http.ServeMux.
-			if _, err := buildMux(tc.instances, channel.NewConnectionBudget(1), discard()); err == nil {
+			if _, err := buildMux(tc.instances, discard()); err == nil {
 				t.Fatal("buildMux succeeded, want an error naming the duplicate path")
 			}
 		})

@@ -30,8 +30,8 @@ func (a acp) Routes() []channel.Route { return []channel.Route{a.route} }
 // every request authenticated with the operator's bearer token. ctx is the
 // channel's lifetime: an SSE response never ends on its own, so the streams are
 // tied to it and end when momo starts shutting down. How many streams it may
-// hold open is not its own business: the server takes a slot from momo's
-// connection budget for every request it routes here.
+// hold open is not its own business: the listener caps momo's accepted
+// connections.
 func New(ctx context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	s := settings{Path: "/acp"}
 	if err := decode(&s); err != nil {
