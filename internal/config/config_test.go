@@ -28,12 +28,9 @@ func TestMinimalConfigTakesDefaults(t *testing.T) {
 	if cfg.MaxConnections != 1024 {
 		t.Errorf("max_connections = %d, want the default 1024", cfg.MaxConnections)
 	}
-	if cfg.ReadHeaderTimeout != 10*time.Second || cfg.IdleTimeout != 2*time.Minute || cfg.ShutdownTimeout != 20*time.Second {
-		t.Errorf("timeouts = %+v, want 10s, 2m and 20s", cfg)
-	}
-	// A read deadline would expire under an SSE stream the handler is writing.
-	if cfg.ReadTimeout != 0 {
-		t.Errorf("read_timeout = %v, want no limit by default", cfg.ReadTimeout)
+	if cfg.ReadHeaderTimeout != 10*time.Second || cfg.ReadTimeout != 30*time.Second ||
+		cfg.IdleTimeout != 2*time.Minute || cfg.ShutdownTimeout != 20*time.Second {
+		t.Errorf("timeouts = %+v, want 10s, 30s, 2m and 20s", cfg)
 	}
 	if _, ok := cfg.Channels["respondio"]; !ok {
 		t.Fatalf("channels = %v, want respondio", cfg.Channels)

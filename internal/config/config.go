@@ -64,14 +64,9 @@ func parse(raw []byte) (*Config, error) {
 		Listen:            f.Listen,
 		MaxConnections:    f.MaxConnections,
 		ReadHeaderTimeout: duration(f.ReadHeaderTimeout, 10*time.Second),
-		// A read deadline set at the start of a request expires under a stream the
-		// handler is still writing, so nothing bounds a request's body in time by
-		// default; a channel bounds it in size instead.
-		//
-		// future: a body sent slowly still holds a listener slot until
-		// max_connections is reached. Bounding it needs a per-request deadline in the
-		// channel that reads the body, not a deadline on every response.
-		ReadTimeout:     duration(f.ReadTimeout, 0),
+		// net/http clears the read deadline before the handler runs, so this bounds a
+		// request's body without touching a stream the handler keeps open.
+		ReadTimeout:     duration(f.ReadTimeout, 30*time.Second),
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
 		Channels:        map[string]channel.Decoder{},

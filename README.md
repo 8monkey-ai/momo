@@ -70,10 +70,9 @@ listen: ":8080"
 max_connections: 1024
 # How long a request may take to send its headers. Default: "10s"
 read_header_timeout: "10s"
-# How long a request may take to send its body. Default: "0s" (no limit),
-# because a deadline set when the request starts would expire under an open
-# ACP stream. Each channel bounds a body by size instead.
-read_timeout: "0s"
+# How long a request may take to send its body. An ACP stream is not affected,
+# because the deadline is cleared once momo starts answering. Default: "30s"
+read_timeout: "30s"
 # How long an idle keep-alive connection is kept. Default: "2m"
 idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"

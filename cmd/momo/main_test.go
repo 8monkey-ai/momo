@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -208,5 +209,71 @@ func TestListenerStopsAcceptingPastTheConfiguredMaximum(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the freed slot was never served: %v", err)
 		}
+	}
+}
+
+// TestAnOpenStreamOutlivesReadTimeout pins what read_timeout does not cut:
+// net/http clears the read deadline before the handler runs, so a stream stays
+// usable while a request's body is still bounded in time.
+func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nread_timeout: \"300ms\"\nchannels:\n  acp:\n    token: secret\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() { _ = serve(ctx, discard(), cfg, l) }()
+
+	endpoint := "http://" + l.Addr().String() + "/v1/acp"
+	connID := initialize(t, endpoint)
+	stream, err := open(endpoint, connID)
+	if err != nil {
+		t.Fatalf("opening the stream: %v", err)
+	}
+	defer func() { _ = stream.Body.Close() }()
+	frames := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stream.Body)
+		for scanner.Scan() {
+			if data, found := strings.CutPrefix(scanner.Text(), "data: "); found {
+				frames <- data
+				return
+			}
+		}
+		close(frames)
+	}()
+
+	time.Sleep(time.Second)
+
+	// session/new is answered on the connection-scoped stream, so a frame arriving
+	// means the stream outlived three read timeouts.
+	body := `{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}`
+	r, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer secret")
+	r.Header.Set("Acp-Connection-Id", connID)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("session/new = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+
+	select {
+	case frame, open := <-frames:
+		if !open {
+			t.Fatal("the stream was closed before the response arrived")
+		}
+		if !strings.Contains(frame, "sessionId") {
+			t.Fatalf("frame = %s, want the session/new result", frame)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no response arrived on a stream older than read_timeout")
 	}
 }
