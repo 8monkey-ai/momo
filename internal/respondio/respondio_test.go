@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -94,8 +95,11 @@ func TestDispatch(t *testing.T) {
 			}
 			select {
 			case got := <-c.calls:
-				want := call{direction: tc.direction, message: core.Message{Contact: "12345", Text: "hello"}}
-				if got != want {
+				want := call{direction: tc.direction, message: core.Message{
+					Contact: "12345",
+					Content: []core.ContentBlock{{Type: "text", Text: "hello"}},
+				}}
+				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("core called with %+v, want %+v", got, want)
 				}
 			case <-time.After(time.Second):
