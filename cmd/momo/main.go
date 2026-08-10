@@ -6,23 +6,23 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
+
+	"golang.org/x/net/netutil"
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
 
-	_ "github.com/8monkey-ai/momo/internal/respondio"
+	_ "github.com/8monkey-ai/momo/internal/channel/acp"
+	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
 )
 
-const (
-	healthPath      = "/healthz"
-	shutdownTimeout = 20 * time.Second
-)
+const healthPath = "/healthz"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -40,22 +40,24 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	instances, err := channel.Build(cfg.Channels, core.LogHandler{Log: log})
+	l, err := listen(cfg)
 	if err != nil {
 		return err
 	}
-	mux, err := buildMux(instances, log)
-	if err != nil {
-		return err
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serve(ctx, log, cfg, l)
+}
 
-	return serve(log, &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	})
+// listen enforces the configured maximum on accept, before a request exists: an
+// SSE stream holding a connection for hours is what the cap accounts for, and a
+// request already accepted is never refused for it.
+func listen(cfg *config.Config) (net.Listener, error) {
+	l, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return nil, err
+	}
+	return netutil.LimitListener(l, cfg.MaxConnections), nil
 }
 
 func buildMux(instances []channel.Instance, log *slog.Logger) (*http.ServeMux, error) {
@@ -97,13 +99,29 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(log *slog.Logger, srv *http.Server) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.Listener) error {
+	lifetime, release := context.WithCancel(context.Background())
+	defer release()
+
+	instances, err := channel.Build(lifetime, cfg.Channels, core.LogHandler{Log: log})
+	if err != nil {
+		return err
+	}
+	mux, err := buildMux(instances, log)
+	if err != nil {
+		return err
+	}
+	// No WriteTimeout: any value cuts a stream a channel is still writing.
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+	}
 
 	failed := make(chan error, 1)
-	go func() { failed <- srv.ListenAndServe() }()
-	log.Info("🐒 momo listening", "address", srv.Addr, "health", healthPath)
+	go func() { failed <- srv.Serve(l) }()
+	log.Info("🐒 momo listening", "address", l.Addr().String(), "health", healthPath, "max_connections", cfg.MaxConnections)
 
 	select {
 	case err := <-failed:
@@ -112,7 +130,10 @@ func serve(log *slog.Logger, srv *http.Server) error {
 	}
 
 	log.Info("shutting down, waiting for in-flight requests")
-	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	// Channels release their streams first: Shutdown waits for handlers to
+	// return, and a stream never returns on its own.
+	release()
+	shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdown)
 }

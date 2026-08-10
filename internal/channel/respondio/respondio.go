@@ -47,8 +47,9 @@ type respondio struct {
 func (r respondio) Routes() []channel.Route { return r.routes }
 
 // New configures the respond.io channel: one route per registered webhook, each
-// verified with that webhook's own signing key.
-func New(decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+// verified with that webhook's own signing key. respond.io holds nothing that
+// needs releasing at shutdown, so it ignores its lifetime.
+func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",
@@ -115,7 +116,9 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	m := core.Message{
 		Contact: strconv.FormatInt(ev.Contact.ID, 10),
-		Text:    ev.Message.Message.Text,
+		// respond.io speaks plain text; the core's content blocks are ACP's, so the
+		// conversion happens here rather than in the core.
+		Content: core.Text(ev.Message.Message.Text),
 	}
 	switch ev.EventType {
 	case eventReceived:

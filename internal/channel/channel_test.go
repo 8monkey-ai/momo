@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 func noSettings(any) error { return nil }
 
 func stub(name string) Factory {
-	return func(Decoder, core.Handler) (Channel, error) {
+	return func(context.Context, Decoder, core.Handler) (Channel, error) {
 		return fixed{routes: []Route{{Path: "/" + name}}}, nil
 	}
 }
@@ -33,7 +34,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 	Register("stub-b", stub("b"))
 	Register("stub-a", stub("a"))
 
-	got, err := Build(map[string]Decoder{"stub-b": noSettings, "stub-a": noSettings}, nil)
+	got, err := Build(context.Background(), map[string]Decoder{"stub-b": noSettings, "stub-a": noSettings}, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 }
 
 func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
-	if _, err := Build(map[string]Decoder{"telegran": noSettings}, nil); err == nil {
+	if _, err := Build(context.Background(), map[string]Decoder{"telegran": noSettings}, nil); err == nil {
 		t.Fatal("Build succeeded, want an error naming the unknown channel")
 	}
 }
@@ -51,9 +52,9 @@ func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
 func TestBuildReportsWhichChannelFailed(t *testing.T) {
 	isolateFactories(t)
 	broken := errors.New("missing signing key")
-	Register("stub-broken", func(Decoder, core.Handler) (Channel, error) { return nil, broken })
+	Register("stub-broken", func(context.Context, Decoder, core.Handler) (Channel, error) { return nil, broken })
 
-	_, err := Build(map[string]Decoder{"stub-broken": noSettings}, nil)
+	_, err := Build(context.Background(), map[string]Decoder{"stub-broken": noSettings}, nil)
 	if !errors.Is(err, broken) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
