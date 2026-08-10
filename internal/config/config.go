@@ -7,25 +7,33 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/8monkey-ai/momo/internal/channel"
 )
 
-// DefaultListen is the address momo serves on when the file says nothing.
-const DefaultListen = ":8080"
-
 // Config is the configuration momo runs with. Channel blocks stay undecoded so
 // that each channel owns its own settings.
 type Config struct {
-	Listen   string
-	Channels map[string]channel.Decoder
+	Listen            string
+	MaxConnections    int
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
+	Channels          map[string]channel.Decoder
 }
 
 type file struct {
-	Listen   string               `yaml:"listen"`
-	Channels map[string]yaml.Node `yaml:"channels"`
+	Listen            string               `yaml:"listen"`
+	MaxConnections    int                  `yaml:"max_connections"`
+	ReadHeaderTimeout *time.Duration       `yaml:"read_header_timeout"`
+	ReadTimeout       *time.Duration       `yaml:"read_timeout"`
+	IdleTimeout       *time.Duration       `yaml:"idle_timeout"`
+	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
+	Channels          map[string]yaml.Node `yaml:"channels"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -52,14 +60,35 @@ func parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
 		return nil, errors.New("invalid configuration: unexpected content after the first YAML document")
 	}
-	cfg := &Config{Listen: f.Listen, Channels: map[string]channel.Decoder{}}
+	cfg := &Config{
+		Listen:            f.Listen,
+		MaxConnections:    f.MaxConnections,
+		ReadHeaderTimeout: duration(f.ReadHeaderTimeout, 10*time.Second),
+		// A read deadline set at the start of a request expires under a stream the
+		// handler is still writing, so nothing bounds a request's body in time by
+		// default; a channel bounds it in size instead.
+		ReadTimeout:     duration(f.ReadTimeout, 0),
+		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
+		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
+		Channels:        map[string]channel.Decoder{},
+	}
 	if cfg.Listen == "" {
-		cfg.Listen = DefaultListen
+		cfg.Listen = ":8080"
+	}
+	if cfg.MaxConnections == 0 {
+		cfg.MaxConnections = 1024
 	}
 	for name, node := range f.Channels {
 		cfg.Channels[name] = decoderFor(node)
 	}
 	return cfg, nil
+}
+
+func duration(set *time.Duration, fallback time.Duration) time.Duration {
+	if set == nil {
+		return fallback
+	}
+	return *set
 }
 
 func decoderFor(node yaml.Node) channel.Decoder {

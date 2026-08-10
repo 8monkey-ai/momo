@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/8monkey-ai/momo/internal/channel"
+	"github.com/8monkey-ai/momo/internal/config"
 )
 
 type fixed struct {
@@ -83,5 +90,123 @@ func TestMuxReportsAPathServedTwice(t *testing.T) {
 				t.Fatal("buildMux succeeded, want an error naming the duplicate path")
 			}
 		})
+	}
+}
+
+func loadConfig(t *testing.T, body string) *config.Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "momo.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return cfg
+}
+
+// TestShutdownDoesNotWaitForAnOpenStream drives shutdown the way run does: the
+// process cancels the context, and the channels are told through their lifetime.
+func TestShutdownDoesNotWaitForAnOpenStream(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nshutdown_timeout: 30s\nchannels:\n  acp:\n    token: secret\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- serve(ctx, discard(), cfg, l) }()
+
+	endpoint := "http://" + l.Addr().String() + "/v1/acp"
+	connID := initialize(t, endpoint)
+	stream, err := open(endpoint, connID)
+	if err != nil {
+		t.Fatalf("opening the stream: %v", err)
+	}
+	defer func() { _ = stream.Body.Close() }()
+
+	stop()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown waited for the open stream instead of closing it")
+	}
+}
+
+func initialize(t *testing.T, endpoint string) string {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`
+	r, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	return resp.Header.Get("Acp-Connection-Id")
+}
+
+func open(endpoint, connID string) (*http.Response, error) {
+	r, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("Accept", "text/event-stream")
+	r.Header.Set("Authorization", "Bearer secret")
+	r.Header.Set("Acp-Connection-Id", connID)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stream = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	return resp, nil
+}
+
+func TestListenerRefusesPastTheConfiguredMaximum(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nmax_connections: 1\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: marker("ok"), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(l) }()
+	defer func() { _ = srv.Close() }()
+
+	held, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	client := &http.Client{
+		Timeout:   300 * time.Millisecond,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	if _, err := client.Get("http://" + l.Addr().String()); err == nil {
+		t.Fatal("a second connection was served while the maximum was reached")
+	}
+
+	_ = held.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get("http://" + l.Addr().String())
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the freed slot was never served: %v", err)
+		}
 	}
 }

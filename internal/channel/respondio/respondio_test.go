@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -94,8 +95,8 @@ func TestDispatch(t *testing.T) {
 			}
 			select {
 			case got := <-c.calls:
-				want := call{direction: tc.direction, message: core.Message{Contact: "12345", Text: "hello"}}
-				if got != want {
+				want := call{direction: tc.direction, message: core.Message{Contact: "12345", Content: core.Text("hello")}}
+				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("core called with %+v, want %+v", got, want)
 				}
 			case <-time.After(time.Second):
@@ -182,7 +183,7 @@ func TestNewRoutes(t *testing.T) {
 		s.SentSecret = "b"
 		return nil
 	}
-	c, err := New(yaml, capture{})
+	c, err := New(context.Background(), yaml, capture{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestNewRequiresBothSecrets(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})

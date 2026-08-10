@@ -1,9 +1,10 @@
 // Package channel is the contract a messaging channel plugs into: it declares
 // itself at startup, decodes its own settings, and contributes the HTTP routes
-// it needs, if any.
+// it needs, if any. The channels themselves live in subpackages of this one.
 package channel
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"net/http"
@@ -28,8 +29,12 @@ type Channel interface {
 // untouched when the block is empty.
 type Decoder func(v any) error
 
-// Factory builds a channel from its configuration.
-type Factory func(decode Decoder, h core.Handler) (Channel, error)
+// Factory builds a channel from its configuration. The context is the
+// channel's lifetime: momo cancels it when it begins shutting down, and a
+// channel releases whatever it holds — open streams, goroutines, clients — when
+// that happens. The process decides when that is; a channel never watches for
+// it itself.
+type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -49,14 +54,14 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(configs map[string]Decoder, h core.Handler) ([]Instance, error) {
+func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(configs[name], h)
+		c, err := f(lifetime, configs[name], h)
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

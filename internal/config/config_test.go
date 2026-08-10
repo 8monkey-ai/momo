@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func load(t *testing.T, body string) *Config {
@@ -21,8 +22,18 @@ func load(t *testing.T, body string) *Config {
 
 func TestMinimalConfigTakesDefaults(t *testing.T) {
 	cfg := load(t, "channels:\n  respondio:\n    received_secret: a\n")
-	if cfg.Listen != DefaultListen {
-		t.Errorf("listen = %q, want the default %q", cfg.Listen, DefaultListen)
+	if cfg.Listen != ":8080" {
+		t.Errorf("listen = %q, want the default \":8080\"", cfg.Listen)
+	}
+	if cfg.MaxConnections != 1024 {
+		t.Errorf("max_connections = %d, want the default 1024", cfg.MaxConnections)
+	}
+	if cfg.ReadHeaderTimeout != 10*time.Second || cfg.IdleTimeout != 2*time.Minute || cfg.ShutdownTimeout != 20*time.Second {
+		t.Errorf("timeouts = %+v, want 10s, 2m and 20s", cfg)
+	}
+	// A read deadline would expire under an SSE stream the handler is writing.
+	if cfg.ReadTimeout != 0 {
+		t.Errorf("read_timeout = %v, want no limit by default", cfg.ReadTimeout)
 	}
 	if _, ok := cfg.Channels["respondio"]; !ok {
 		t.Fatalf("channels = %v, want respondio", cfg.Channels)
@@ -69,7 +80,7 @@ func TestMisspelledChannelSettingIsReported(t *testing.T) {
 }
 
 func TestEmptyFileIsValid(t *testing.T) {
-	if cfg := load(t, ""); cfg.Listen != DefaultListen || len(cfg.Channels) != 0 {
+	if cfg := load(t, ""); cfg.Listen != ":8080" || len(cfg.Channels) != 0 {
 		t.Errorf("config = %+v, want defaults and no channels", cfg)
 	}
 }

@@ -1,7 +1,8 @@
 # momo
 
-momo connects your messaging channels to AI agents. Contacts message your business on
-WhatsApp, Telegram or Facebook Messenger; momo receives every message, in both directions,
+momo connects your channels to AI agents. Contacts message your business on WhatsApp,
+Telegram or Facebook Messenger, or a program speaks to momo directly over
+[ACP](https://agentclientprotocol.com); momo receives every message, in both directions,
 and acts on it.
 
 You run momo the way you run nginx or Caddy: one binary, one configuration file, logs on
@@ -36,8 +37,9 @@ momo writes its log to stdout. At startup it reports every channel it brought up
 HTTP paths that channel serves:
 
 ```
+level=INFO msg="channel ready" channel=acp paths="[/v1/acp]"
 level=INFO msg="channel ready" channel=respondio paths="[/respondio/received /respondio/sent]"
-level=INFO msg="🐒 momo listening" address=:8080 health=/healthz
+level=INFO msg="🐒 momo listening" address=:8080 health=/healthz max_connections=1024
 ```
 
 If the configuration file is missing, unreadable or incomplete, momo reports the reason and
@@ -62,6 +64,19 @@ rebuild.
 ```yaml
 # Address momo listens on. Default: ":8080"
 listen: ":8080"
+# Connections momo serves at once. Refused on accept past this number, so an
+# ACP client holding a stream open for hours counts against it. Default: 1024
+max_connections: 1024
+# How long a request may take to send its headers. Default: "10s"
+read_header_timeout: "10s"
+# How long a request may take to send its body. Default: "0s" (no limit),
+# because a deadline set when the request starts would expire under an open
+# ACP stream. Each channel bounds a body by size instead.
+read_timeout: "0s"
+# How long an idle keep-alive connection is kept. Default: "2m"
+idle_timeout: "2m"
+# How long a shutdown waits for in-flight requests before giving up. Default: "20s"
+shutdown_timeout: "20s"
 
 channels:
   respondio:
@@ -73,6 +88,15 @@ channels:
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
     sent_path: "/respondio/sent"
+
+  acp:
+    # Bearer token every ACP request must present. Required.
+    token: "a long random string you generate"
+    # Path momo serves the ACP endpoint on. Default: "/v1/acp"
+    path: "/v1/acp"
+    # How long a connection nobody is listening to is kept before momo drops it.
+    # Default: "5m"
+    connection_grace: "5m"
 ```
 
 Only the two signing keys are required. Every other setting has a default, so the shortest
@@ -85,10 +109,9 @@ channels:
     sent_secret: "paste the message.sent signing key"
 ```
 
-Leave out the `respondio` block entirely and momo starts with no channel, serving only
-`/healthz`.
+Leave out both channel blocks and momo starts with no channel, serving only `/healthz`.
 
-The keys are secrets. Keep the file readable only by the user momo runs as:
+The keys and the ACP token are secrets. Keep the file readable only by the user momo runs as:
 
 ```
 chmod 600 /etc/momo/momo.yaml
@@ -127,6 +150,47 @@ incompletely.
 Both webhooks may also deliver event types momo does not act on, such as contact updates.
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
+
+## Connect an ACP client
+
+The `acp` block turns on a second channel: an [ACP](https://agentclientprotocol.com)
+endpoint momo answers as the agent side. Any program that speaks ACP over HTTP can send
+momo prompts, and each prompt is a message from a contact.
+
+Add the block with a token, restart momo, and hand whoever runs the client two things:
+
+- the URL, `https://your-domain.example/v1/acp`
+- the token, which the client sends as `Authorization: Bearer <token>` on every request
+
+Requests without the token, or with the wrong one, are answered `401` and get no further.
+Put momo behind a reverse proxy that terminates TLS: prompts carry contact messages, and
+the token travels with every request.
+
+The client connects like this:
+
+1. `POST` an `initialize` request. The response carries a connection id, in the body and in
+   the `Acp-Connection-Id` header, which every later request must present.
+2. `GET` the endpoint with `Accept: text/event-stream` and that connection id, to open the
+   connection-scoped stream. Answers arrive here, not in the response to the `POST` that
+   asked for them.
+3. `POST` `session/new`. The `POST` is answered `202` with an empty body, and the session id
+   arrives on the connection-scoped stream.
+4. `GET` the endpoint again with both the connection id and `Acp-Session-Id`, to open that
+   session's stream.
+5. `POST` `session/prompt` with both headers. The prompt reaches momo, and the response
+   arrives on the session's stream.
+
+`DELETE` the endpoint with the connection id to finish: momo releases the connection's
+sessions and closes its streams. A connection nobody is listening to is dropped on its own
+after `connection_grace`.
+
+A prompt may carry any ACP content block — text, images, audio, resource links, embedded
+resources — and momo carries the blocks to the core exactly as they arrived. A prompt with
+no blocks, or a block with no `type`, is answered `invalid params`. A method momo does not
+implement is answered `method not found` and the connection stays usable.
+
+Sessions live in memory only. Restarting momo loses every connection and session, and
+clients have to initialize again.
 
 ## Connect an agent
 
