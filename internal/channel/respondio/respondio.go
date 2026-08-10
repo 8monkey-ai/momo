@@ -70,6 +70,9 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	if s.APIToken == "" {
 		return nil, errors.New("api_token is required")
 	}
+	// ponytail: one 30s timeout for every reply, and a failed call is reported to
+	// the handler and forgotten. Make the timeout a setting and add retry with
+	// backoff here when the transport is revisited after chunked delivery lands.
 	api := &client{http: &http.Client{Timeout: 30 * time.Second}, url: s.APIURL, token: s.APIToken}
 	return respondio{routes: []channel.Route{
 		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, api: api}},

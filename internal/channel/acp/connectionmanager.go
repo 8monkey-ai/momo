@@ -25,8 +25,9 @@ func newStream() *stream {
 //
 // ponytail: a listener that falls 32 frames behind loses a response it is still
 // waiting for, which a disconnected client at least learns from the closed
-// stream. Close the stream on overflow, so the client reconnects instead of
-// waiting, once a turn emits more than one frame per request.
+// stream. A turn already emits one frame per content block plus its response, so
+// the margin is no longer a whole turn: close the stream on overflow, so the
+// client reconnects instead of waiting.
 func (s *stream) send(frame []byte) {
 	select {
 	case s.frames <- frame:
