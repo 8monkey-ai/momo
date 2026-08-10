@@ -118,7 +118,9 @@ func (e *endpoint) dispatch(w http.ResponseWriter, r *http.Request, req *jsonrpc
 	if resp == nil {
 		return
 	}
-	e.conns.send(connID, streamOf(req.Method, sessionID), frame(resp))
+	// A response the client is no longer listening for is nothing momo can act on:
+	// the POST it belongs to has already been answered 202.
+	_ = e.conns.send(connID, streamOf(req.Method, sessionID), frame(resp))
 }
 
 func (e *endpoint) get(w http.ResponseWriter, r *http.Request) {
@@ -195,11 +197,11 @@ func isBatch(body []byte) bool {
 	return strings.HasPrefix(trimmed, "[")
 }
 
-func frame(resp *jsonrpc2.Response) []byte {
-	body, err := json.Marshal(resp)
-	if err != nil {
-		body, _ = json.Marshal(errorResponse(resp.ID, jsonrpc2.CodeInternalError, "the response could not be encoded"))
-	}
+// frame is the one place SSE framing is decided. Both a response and a
+// notification reach it already encodable: result and SetParams reject a payload
+// that does not marshal before it gets here.
+func frame(msg json.Marshaler) []byte {
+	body, _ := msg.MarshalJSON()
 	return append(append([]byte("data: "), body...), '\n', '\n')
 }
 

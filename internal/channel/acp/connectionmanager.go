@@ -179,25 +179,28 @@ func listening(c *connection) bool {
 }
 
 // send delivers a frame on the connection-scoped stream when sessionID is empty
-// and on that session's stream otherwise.
-func (m *connectionManager) send(connID, sessionID string, frame []byte) {
+// and on that session's stream otherwise, reporting whether a stream took it: a
+// reply nothing is listening to is a failure the caller has to hear about.
+func (m *connectionManager) send(connID, sessionID string, frame []byte) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, known := m.conns[connID]
 	if !known {
-		return
+		return false
 	}
 	s := c.stream
 	if sessionID != "" {
 		attached, known := c.sessions[sessionID]
 		if !known {
-			return
+			return false
 		}
 		s = attached
 	}
-	if s != nil {
-		s.send(frame)
+	if s == nil {
+		return false
 	}
+	s.send(frame)
+	return true
 }
 
 // release drops a connection, its sessions and its streams.

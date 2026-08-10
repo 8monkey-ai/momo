@@ -5,13 +5,18 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -27,7 +32,7 @@ type capture struct {
 	calls chan call
 }
 
-func (c capture) Received(ctx context.Context, m core.Message) {
+func (c capture) Received(ctx context.Context, m core.Message, _ core.Reply) {
 	c.calls <- call{direction: "received", message: m, ctxErr: ctx.Err()}
 }
 
@@ -52,9 +57,62 @@ func post(t *testing.T, h http.Handler, body, signature string) *httptest.Respon
 	return w
 }
 
-func payload(eventType string) string {
-	return `{"event_type":"` + eventType + `","contact":{"id":12345},` +
-		`"message":{"message":{"type":"text","text":"hello"}}}`
+func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// apiCall is what the fake respond.io API saw of one reply.
+type apiCall struct {
+	method      string
+	path        string
+	auth        string
+	contentType string
+	body        string
+}
+
+// fakeAPI stands in for respond.io's REST API, answering every call with status.
+func fakeAPI(t *testing.T, status int, body string) (*client, chan apiCall) {
+	t.Helper()
+	calls := make(chan apiCall, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent, _ := io.ReadAll(r.Body)
+		calls <- apiCall{
+			method:      r.Method,
+			path:        r.URL.Path,
+			auth:        r.Header.Get("Authorization"),
+			contentType: r.Header.Get("Content-Type"),
+			body:        string(sent),
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return &client{http: srv.Client(), url: srv.URL, token: "api-token"}, calls
+}
+
+func nextCall(t *testing.T, calls chan apiCall) apiCall {
+	t.Helper()
+	select {
+	case got := <-calls:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("the API was never called")
+		return apiCall{}
+	}
+}
+
+func noCall(t *testing.T, calls chan apiCall) {
+	t.Helper()
+	select {
+	case got := <-calls:
+		t.Fatalf("the API was called with %+v, want no call", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func payload(eventType string) string { return payloadFor(eventType, 12345, "hello") }
+
+func payloadFor(eventType string, contactID int64, text string) string {
+	return `{"event_type":"` + eventType + `","contact":{"id":` + strconv.FormatInt(contactID, 10) + `},` +
+		`"message":{"message":{"type":"text","text":"` + text + `"}}}`
 }
 
 func TestSignature(t *testing.T) {
@@ -174,16 +232,7 @@ func TestMalformedPayload(t *testing.T) {
 }
 
 func TestNewRoutes(t *testing.T) {
-	yaml := func(v any) error {
-		s, ok := v.(*settings)
-		if !ok {
-			t.Fatalf("decoded into %T, want *settings", v)
-		}
-		s.ReceivedSecret = "a"
-		s.SentSecret = "b"
-		return nil
-	}
-	c, err := New(context.Background(), yaml, capture{})
+	c, err := New(context.Background(), configured(t, func(*settings) {}), capture{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -191,6 +240,128 @@ func TestNewRoutes(t *testing.T) {
 	if len(got) != 2 || got[0].Path != "/respondio/received" || got[1].Path != "/respondio/sent" {
 		t.Fatalf("routes = %+v, want the two default webhook paths", got)
 	}
+}
+
+// configured decodes a usable configuration, with apply changing what a test is
+// about.
+func configured(t *testing.T, apply func(*settings)) channel.Decoder {
+	return func(v any) error {
+		s, ok := v.(*settings)
+		if !ok {
+			t.Fatalf("decoded into %T, want *settings", v)
+		}
+		s.ReceivedSecret = "a"
+		s.SentSecret = "b"
+		s.APIToken = "api-token"
+		apply(s)
+		return nil
+	}
+}
+
+func TestNewRequiresAnAPIToken(t *testing.T) {
+	decode := configured(t, func(s *settings) { s.APIToken = "" })
+	if _, err := New(context.Background(), decode, capture{}); err == nil {
+		t.Fatal("New succeeded, want an error about the missing api_token")
+	}
+}
+
+func TestNewDefaultsTheAPIURL(t *testing.T) {
+	c, err := New(context.Background(), configured(t, func(*settings) {}), capture{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got := c.Routes()[0].Handler.(*webhook).api.url
+	if got != "https://api.respond.io/v2" {
+		t.Fatalf("api url = %q, want \"https://api.respond.io/v2\"", got)
+	}
+}
+
+func TestReplyGoesToTheContactsMessageEndpoint(t *testing.T) {
+	api, calls := fakeAPI(t, http.StatusOK, `{"messageId":1}`)
+	if err := api.send(context.Background(), "12345", "hello"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got := nextCall(t, calls)
+	want := apiCall{
+		method:      "POST",
+		path:        "/contact/id:12345/message",
+		auth:        "Bearer api-token",
+		contentType: "application/json",
+		body:        `{"message":{"type":"text","text":"hello"}}`,
+	}
+	if got != want {
+		t.Fatalf("the API saw %+v, want %+v", got, want)
+	}
+}
+
+func TestNothingToSayIssuesNoCall(t *testing.T) {
+	api, calls := fakeAPI(t, http.StatusOK, `{}`)
+	if err := api.send(context.Background(), "12345", ""); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	noCall(t, calls)
+}
+
+func TestReplyErrorCarriesTheStatus(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			api, _ := fakeAPI(t, status, `{"message":"refused"}`)
+			err := api.send(context.Background(), "12345", "hello")
+			if err == nil {
+				t.Fatal("send succeeded, want an error naming the status")
+			}
+			if !strings.Contains(err.Error(), strconv.Itoa(status)) {
+				t.Fatalf("error %q does not name status %d", err, status)
+			}
+			if !strings.Contains(err.Error(), "refused") {
+				t.Fatalf("error %q does not carry the response body", err)
+			}
+		})
+	}
+}
+
+func TestEchoAnswersAnIncomingMessageAndNothingElse(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event string
+		call  bool
+	}{
+		{name: "incoming message is answered", event: eventReceived, call: true},
+		{name: "outgoing message is not", event: eventSent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, calls := fakeAPI(t, http.StatusOK, `{}`)
+			h := &webhook{secret: secret, core: core.EchoHandler{Log: discard()}, api: api}
+			body := payload(tc.event)
+			if got := post(t, h, body, sign(body, secret)).Code; got != http.StatusOK {
+				t.Fatalf("status = %d, want %d", got, http.StatusOK)
+			}
+			if !tc.call {
+				noCall(t, calls)
+				return
+			}
+			if got := nextCall(t, calls); got.body != `{"message":{"type":"text","text":"hello"}}` {
+				t.Fatalf("body = %s, want the text that arrived", got.body)
+			}
+			noCall(t, calls)
+		})
+	}
+}
+
+func TestConcurrentWebhooksAnswerTheirOwnContact(t *testing.T) {
+	api, calls := fakeAPI(t, http.StatusOK, `{}`)
+	h := &webhook{secret: secret, core: core.EchoHandler{Log: discard()}, api: api}
+	for _, contactID := range []int64{111, 222} {
+		body := payloadFor(eventReceived, contactID, "hello")
+		go post(t, h, body, sign(body, secret))
+	}
+	paths := []string{nextCall(t, calls).path, nextCall(t, calls).path}
+	slices.Sort(paths)
+	want := []string{"/contact/id:111/message", "/contact/id:222/message"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("the API saw %v, want %v", paths, want)
+	}
+	noCall(t, calls)
 }
 
 func TestNewRequiresBothSecrets(t *testing.T) {
@@ -204,7 +375,9 @@ func TestNewRequiresBothSecrets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decode := func(v any) error {
-				tc.apply(v.(*settings))
+				s := v.(*settings)
+				s.APIToken = "api-token"
+				tc.apply(s)
 				return nil
 			}
 			if _, err := New(context.Background(), decode, capture{}); err == nil {

@@ -24,8 +24,31 @@ type capture struct {
 	received chan core.Message
 }
 
-func (c capture) Received(_ context.Context, m core.Message) { c.received <- m }
-func (c capture) Sent(_ context.Context, m core.Message)     { c.received <- m }
+func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) { c.received <- m }
+func (c capture) Sent(_ context.Context, m core.Message)                   { c.received <- m }
+
+// replier answers every prompt with the blocks it carried and records what the
+// reply reported, which is the only place a failed send is observable.
+type replier struct {
+	errs chan error
+}
+
+func (r replier) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	r.errs <- reply(ctx, m.Content)
+}
+
+func (r replier) Sent(context.Context, core.Message) {}
+
+func (r replier) result(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-r.errs:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("the core was never called")
+		return nil
+	}
+}
 
 type harness struct {
 	url   string
@@ -35,14 +58,27 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{
-		conns: newConnectionManager(time.Minute, time.Now),
-		core:  capture{received: make(chan core.Message, 4)},
-	}
-	srv := httptest.NewServer(&endpoint{token: token, conns: h.conns, core: h.core})
-	t.Cleanup(srv.Close)
-	h.url = srv.URL
+	core := capture{received: make(chan core.Message, 4)}
+	h := &harness{conns: newConnectionManager(time.Minute, time.Now), core: core}
+	h.url = serve(t, h.conns, core)
 	return h
+}
+
+// newReplyingHarness serves the endpoint with a handler that replies, for the
+// tests about what the reply puts on a stream.
+func newReplyingHarness(t *testing.T) (*harness, replier) {
+	t.Helper()
+	r := replier{errs: make(chan error, 4)}
+	h := &harness{conns: newConnectionManager(time.Minute, time.Now)}
+	h.url = serve(t, h.conns, r)
+	return h, r
+}
+
+func serve(t *testing.T, conns *connectionManager, h core.Handler) string {
+	t.Helper()
+	srv := httptest.NewServer(&endpoint{token: token, conns: conns, core: h})
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // request describes one HTTP request to the endpoint. The zero value is a
@@ -157,22 +193,48 @@ func (h *harness) stream(t *testing.T, connID, sessionID string) *sse {
 	return s
 }
 
-func (s *sse) next(t *testing.T) jsonrpc2.Response {
+// update reads the next frame as a session/update notification.
+func (s *sse) update(t *testing.T) sessionUpdateParams {
+	t.Helper()
+	var req jsonrpc2.Request
+	if err := json.Unmarshal(s.frame(t), &req); err != nil {
+		t.Fatalf("frame is not a JSON-RPC message: %v", err)
+	}
+	if req.Method != "session/update" {
+		t.Fatalf("method = %q, want \"session/update\"", req.Method)
+	}
+	if !req.Notif {
+		t.Fatal("the update carried an id, want a notification")
+	}
+	var p sessionUpdateParams
+	if err := json.Unmarshal(*req.Params, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func (s *sse) frame(t *testing.T) json.RawMessage {
 	t.Helper()
 	select {
 	case frame, open := <-s.frames:
 		if !open {
 			t.Fatal("the stream closed before a message arrived")
 		}
-		var resp jsonrpc2.Response
-		if err := json.Unmarshal(frame, &resp); err != nil {
-			t.Fatalf("frame %s: %v", frame, err)
-		}
-		return resp
+		return frame
 	case <-time.After(2 * time.Second):
 		t.Fatal("no message arrived on the stream")
-		return jsonrpc2.Response{}
+		return nil
 	}
+}
+
+func (s *sse) next(t *testing.T) jsonrpc2.Response {
+	t.Helper()
+	frame := s.frame(t)
+	var resp jsonrpc2.Response
+	if err := json.Unmarshal(frame, &resp); err != nil {
+		t.Fatalf("frame %s: %v", frame, err)
+	}
+	return resp
 }
 
 func (s *sse) silent(t *testing.T) {
@@ -189,6 +251,13 @@ func (h *harness) session(t *testing.T) (connID, sessionID string, connStream, s
 	t.Helper()
 	connID = h.initialize(t)
 	connStream = h.stream(t, connID, "")
+	sessionID = h.newSession(t, connID, connStream)
+	return connID, sessionID, connStream, h.stream(t, connID, sessionID)
+}
+
+// newSession creates a session and returns its id, without listening to it.
+func (h *harness) newSession(t *testing.T, connID string, connStream *sse) string {
+	t.Helper()
 	status(t, h.do(t, request{body: rpc(2, methodNewSession,
 		`{"cwd":"/workspace","mcpServers":[]}`), connID: connID}), http.StatusAccepted)
 	// The response to session/new lands on the connection-scoped stream: the
@@ -198,7 +267,7 @@ func (h *harness) session(t *testing.T) (connID, sessionID string, connStream, s
 	if created.SessionID == "" {
 		t.Fatal("session/new returned no sessionId")
 	}
-	return connID, created.SessionID, connStream, h.stream(t, connID, created.SessionID)
+	return created.SessionID
 }
 
 func unmarshalResult(t *testing.T, resp jsonrpc2.Response, v any) {
@@ -553,4 +622,92 @@ func TestNewServesTheConfiguredPath(t *testing.T) {
 	if len(routes) != 1 || routes[0].Path != "/v1/acp" {
 		t.Fatalf("routes = %+v, want the single default path /v1/acp", routes)
 	}
+}
+
+func TestReplyIsEmittedOnTheSessionStreamBeforeThePromptResponse(t *testing.T) {
+	h, r := newReplyingHarness(t)
+	connID, sessionID, connStream, sessionStream := h.session(t)
+
+	prompt := `{"sessionId":"` + sessionID + `","prompt":[` +
+		`{"type":"text","text":"hello"},` +
+		`{"type":"audio","data":"AAAA","mimeType":"audio/wav"}]}`
+	status(t, h.do(t, request{body: rpc(3, methodPrompt, prompt), connID: connID, sessionID: sessionID}),
+		http.StatusAccepted)
+	if err := r.result(t); err != nil {
+		t.Fatalf("the reply failed: %v", err)
+	}
+
+	// One notification per block, in the order the blocks arrived, and all of them
+	// ahead of the response to session/prompt.
+	for _, want := range []core.ContentBlock{
+		{Type: "text", Text: "hello"},
+		{Type: "audio", Data: "AAAA", MimeType: "audio/wav"},
+	} {
+		got := sessionStream.update(t)
+		if got.SessionID != sessionID {
+			t.Fatalf("sessionId = %q, want %q", got.SessionID, sessionID)
+		}
+		if got.Update.SessionUpdate != "agent_message_chunk" {
+			t.Fatalf("sessionUpdate = %q, want \"agent_message_chunk\"", got.Update.SessionUpdate)
+		}
+		if !reflect.DeepEqual(got.Update.Content, want) {
+			t.Fatalf("content = %+v, want %+v", got.Update.Content, want)
+		}
+	}
+	var completed promptResult
+	unmarshalResult(t, sessionStream.next(t), &completed)
+	if completed.StopReason != "end_turn" {
+		t.Fatalf("stopReason = %q, want \"end_turn\"", completed.StopReason)
+	}
+	connStream.silent(t)
+}
+
+func TestEachSessionIsAnsweredOnItsOwnStream(t *testing.T) {
+	h, r := newReplyingHarness(t)
+	connID := h.initialize(t)
+	connStream := h.stream(t, connID, "")
+
+	first := h.newSession(t, connID, connStream)
+	second := h.newSession(t, connID, connStream)
+	streams := map[string]*sse{first: h.stream(t, connID, first), second: h.stream(t, connID, second)}
+
+	for id, text := range map[string]string{first: "for the first", second: "for the second"} {
+		status(t, h.do(t, request{
+			body:   rpc(3, methodPrompt, `{"prompt":[{"type":"text","text":"`+text+`"}]}`),
+			connID: connID, sessionID: id,
+		}), http.StatusAccepted)
+		if err := r.result(t); err != nil {
+			t.Fatalf("the reply failed: %v", err)
+		}
+		got := streams[id].update(t)
+		if got.Update.Content.Text != text {
+			t.Fatalf("session %s was answered %q, want %q", id, got.Update.Content.Text, text)
+		}
+		var completed promptResult
+		unmarshalResult(t, streams[id].next(t), &completed)
+		// The reply lands on that session's stream and on no other.
+		for other, s := range streams {
+			if other != id {
+				s.silent(t)
+			}
+		}
+	}
+}
+
+func TestAPromptWithoutAnAttachedSessionStreamIsStillAnswered(t *testing.T) {
+	h, r := newReplyingHarness(t)
+	connID := h.initialize(t)
+	connStream := h.stream(t, connID, "")
+	sessionID := h.newSession(t, connID, connStream)
+
+	// Nothing listens to the session, so the reply cannot be delivered. The POST
+	// is answered all the same: the reply's failure is the handler's to act on.
+	status(t, h.do(t, request{
+		body:   rpc(3, methodPrompt, `{"prompt":[{"type":"text","text":"hello"}]}`),
+		connID: connID, sessionID: sessionID,
+	}), http.StatusAccepted)
+	if err := r.result(t); err == nil {
+		t.Fatal("the reply reported success, want an error naming the session nothing listens to")
+	}
+	connStream.silent(t)
 }

@@ -1,4 +1,5 @@
-// Package respondio receives the webhook events respond.io pushes to momo.
+// Package respondio receives the webhook events respond.io pushes to momo and
+// replies over its REST API.
 package respondio
 
 import (
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -38,6 +40,8 @@ type settings struct {
 	SentSecret     string `yaml:"sent_secret"`
 	ReceivedPath   string `yaml:"received_path"`
 	SentPath       string `yaml:"sent_path"`
+	APIToken       string `yaml:"api_token"`
+	APIURL         string `yaml:"api_url"`
 }
 
 type respondio struct {
@@ -47,12 +51,14 @@ type respondio struct {
 func (r respondio) Routes() []channel.Route { return r.routes }
 
 // New configures the respond.io channel: one route per registered webhook, each
-// verified with that webhook's own signing key. respond.io holds nothing that
-// needs releasing at shutdown, so it ignores its lifetime.
+// verified with that webhook's own signing key, and one REST client shared by
+// both. respond.io holds nothing that needs releasing at shutdown, so it ignores
+// its lifetime.
 func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",
+		APIURL:       "https://api.respond.io/v2",
 	}
 	if err := decode(&s); err != nil {
 		return nil, err
@@ -60,15 +66,21 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	if s.ReceivedSecret == "" || s.SentSecret == "" {
 		return nil, errors.New("received_secret and sent_secret are required")
 	}
+	// A channel that cannot reply is a misconfiguration, not a receive-only mode.
+	if s.APIToken == "" {
+		return nil, errors.New("api_token is required")
+	}
+	api := &client{http: &http.Client{Timeout: 30 * time.Second}, url: s.APIURL, token: s.APIToken}
 	return respondio{routes: []channel.Route{
-		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h}},
-		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h}},
+		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, api: api}},
+		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, api: api}},
 	}}, nil
 }
 
 type webhook struct {
 	secret string
 	core   core.Handler
+	api    *client
 }
 
 type event struct {
@@ -122,8 +134,14 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
-		h.core.Received(ctx, m)
+		// The reply is bound to the contact this event came from, so concurrent
+		// webhooks each answer their own contact.
+		h.core.Received(ctx, m, func(ctx context.Context, content []core.ContentBlock) error {
+			return h.api.send(ctx, m.Contact, core.TextOf(content))
+		})
 	case eventSent:
+		// An outgoing message is nothing to answer: replying to it would answer
+		// momo's own replies.
 		h.core.Sent(ctx, m)
 	}
 }

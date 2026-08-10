@@ -88,6 +88,10 @@ channels:
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
     sent_path: "/respondio/sent"
+    # API token momo replies with, from the workspace's API access page. Required.
+    api_token: "paste the workspace API token"
+    # Base URL of the respond.io API. Default: "https://api.respond.io/v2"
+    api_url: "https://api.respond.io/v2"
 
   acp:
     # Bearer token every ACP request must present. Required.
@@ -99,20 +103,22 @@ channels:
     connection_grace: "5m"
 ```
 
-Each channel requires only its credentials: the two signing keys for respond.io, the token
-for ACP. Every other setting has a default, so the shortest working file for respond.io
-alone is:
+Each channel requires only its credentials: the two signing keys and the API token for
+respond.io, the token for ACP. Every other setting has a default, so the shortest working
+file for respond.io alone is:
 
 ```yaml
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
     sent_secret: "paste the message.sent signing key"
+    api_token: "paste the workspace API token"
 ```
 
 Leave out both channel blocks and momo starts with no channel, serving only `/healthz`.
 
-The keys and the ACP token are secrets. Keep the file readable only by the user momo runs as:
+The keys, the API token and the ACP token are secrets. Keep the file readable only by the
+user momo runs as:
 
 ```
 chmod 600 /etc/momo/momo.yaml
@@ -151,6 +157,11 @@ incompletely.
 Both webhooks may also deliver event types momo does not act on, such as contact updates.
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
+
+momo replies over respond.io's REST API: one `POST` to
+`{api_url}/contact/id:{contact}/message` per reply, authorized with `api_token`. A workspace
+whose token is missing is a configuration momo refuses to start with, because the channel
+could receive but never answer.
 
 ## Connect an ACP client
 
@@ -191,11 +202,16 @@ resources — and momo carries the blocks to the core exactly as they arrived. A
 no blocks, or a block with no `type`, is answered `invalid params`. A method momo does not
 implement is answered `method not found` and the connection stays usable.
 
+momo replies on the session's own stream: one `session/update` notification per content
+block, carrying `agent_message_chunk`, all of them ahead of the response to
+`session/prompt`. A client that is not listening to the session's stream misses the reply,
+so open the stream before prompting.
+
 Sessions live in memory only. Restarting momo loses every connection and session, and
 clients have to initialize again.
 
 ## Connect an agent
 
 *(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo receives, verifies and logs
-channel events.
+contact — lands in a follow-up release. Until then, momo echoes every message it receives
+back on the channel it came from.

@@ -20,6 +20,8 @@ const (
 	methodNewSession = "session/new"
 	methodPrompt     = "session/prompt"
 	methodCancel     = "session/cancel"
+
+	methodSessionUpdate = "session/update"
 )
 
 // sessionScoped reports whether a method acts on one session and therefore needs
@@ -74,6 +76,18 @@ type promptResult struct {
 	StopReason string `json:"stopReason"`
 }
 
+type sessionUpdateParams struct {
+	SessionID string            `json:"sessionId"`
+	Update    agentMessageChunk `json:"update"`
+}
+
+// agentMessageChunk is v1's agent_message_chunk update: one content block of what
+// the agent says, carried as the client sent it.
+type agentMessageChunk struct {
+	SessionUpdate string            `json:"sessionUpdate"`
+	Content       core.ContentBlock `json:"content"`
+}
+
 func (e *endpoint) initialize(w http.ResponseWriter, req *jsonrpc2.Request) {
 	connID := e.conns.newConnection()
 	w.Header().Set(connectionHeader, connID)
@@ -97,7 +111,7 @@ func (e *endpoint) answer(ctx context.Context, req *jsonrpc2.Request, connID, se
 	case methodNewSession:
 		return e.newSession(req, connID)
 	case methodPrompt:
-		return e.prompt(ctx, req, sessionID)
+		return e.prompt(ctx, req, connID, sessionID)
 	case methodCancel:
 		// Nothing is running to cancel: session/prompt completes before it is
 		// answered. As a notification it is not answered at all.
@@ -121,7 +135,7 @@ func (e *endpoint) newSession(req *jsonrpc2.Request, connID string) *jsonrpc2.Re
 	return result(req.ID, newSessionResult{SessionID: sessionID})
 }
 
-func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, sessionID string) *jsonrpc2.Response {
+func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, sessionID string) *jsonrpc2.Response {
 	var p promptParams
 	if err := params(req, &p); err != nil {
 		return errorResponse(req.ID, jsonrpc2.CodeInvalidParams, err.Error())
@@ -137,8 +151,33 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, sessionID 
 	// The client's prompt is the contact speaking, and momo issues the session
 	// id, so the session is the contact. The other direction, core.Sent, needs an
 	// agent to produce a reply and there is none yet.
-	e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt})
+	//
+	// Received returns once the reply has been emitted, so session/prompt is
+	// answered after it, on the same stream and behind the notifications.
+	e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt},
+		func(_ context.Context, content []core.ContentBlock) error {
+			return e.reply(connID, sessionID, content)
+		})
 	return result(req.ID, promptResult{StopReason: "end_turn"})
+}
+
+// reply emits one agent_message_chunk notification per content block, in order,
+// on the stream of the session the prompt arrived on. The context is not used:
+// handing a frame to a stream neither blocks nor waits for the client.
+func (e *endpoint) reply(connID, sessionID string, content []core.ContentBlock) error {
+	for _, block := range content {
+		notification := jsonrpc2.Request{Method: methodSessionUpdate, Notif: true}
+		if err := notification.SetParams(sessionUpdateParams{
+			SessionID: sessionID,
+			Update:    agentMessageChunk{SessionUpdate: "agent_message_chunk", Content: block},
+		}); err != nil {
+			return err
+		}
+		if !e.conns.send(connID, sessionID, frame(notification)) {
+			return errors.New("nothing is listening to session " + sessionID)
+		}
+	}
+	return nil
 }
 
 func params(req *jsonrpc2.Request, v any) error {
