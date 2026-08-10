@@ -33,29 +33,54 @@ type Resource struct {
 // converts into.
 func Text(s string) []ContentBlock { return []ContentBlock{{Type: "text", Text: s}} }
 
+// TextOf is the inverse of Text: the text blocks carry, joined, and nothing of
+// the base64 payload an image, audio or blob block holds. A channel that speaks
+// plain text converts with it at its own edge.
+func TextOf(content []ContentBlock) string {
+	var text []string
+	for _, block := range content {
+		if block.Text != "" {
+			text = append(text, block.Text)
+		}
+	}
+	return strings.Join(text, " ")
+}
+
 // Message is a message exchanged with a contact, in the shape the core acts on.
 type Message struct {
 	Contact string
 	Content []ContentBlock
 }
 
+// Reply sends a reply on the channel the message arrived on. The destination is
+// fixed when the message arrives, so it is not a parameter. It is safe to call
+// from any goroutine.
+type Reply func(ctx context.Context, content []ContentBlock) error
+
 // Handler is what a channel delivers messages to. The two directions are
-// separate methods because each is an occasion for a different action.
+// separate methods because each is an occasion for a different action, and only
+// the incoming one has something to answer.
 type Handler interface {
-	Received(ctx context.Context, m Message)
+	Received(ctx context.Context, m Message, reply Reply)
 	Sent(ctx context.Context, m Message)
 }
 
-// LogHandler reports every message on the log.
-type LogHandler struct {
+// EchoHandler answers every incoming message with the content it carried.
+//
+// ponytail: this is the proof that the reply path works end to end, nothing
+// more; the agent harness replaces it.
+type EchoHandler struct {
 	Log *slog.Logger
 }
 
-func (h LogHandler) Received(_ context.Context, m Message) {
+func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
 	h.Log.Info("message received", attrs(m)...)
+	if err := reply(ctx, m.Content); err != nil {
+		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+	}
 }
 
-func (h LogHandler) Sent(_ context.Context, m Message) {
+func (h EchoHandler) Sent(_ context.Context, m Message) {
 	h.Log.Info("message sent", attrs(m)...)
 }
 
@@ -64,12 +89,8 @@ func (h LogHandler) Sent(_ context.Context, m Message) {
 // a single log record.
 func attrs(m Message) []any {
 	types := make([]string, 0, len(m.Content))
-	var text []string
 	for _, block := range m.Content {
 		types = append(types, block.Type)
-		if block.Text != "" {
-			text = append(text, block.Text)
-		}
 	}
-	return []any{"contact", m.Contact, "blocks", types, "text", strings.Join(text, " ")}
+	return []any{"contact", m.Contact, "blocks", types, "text", TextOf(m.Content)}
 }

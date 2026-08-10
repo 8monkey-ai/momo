@@ -27,7 +27,7 @@ type capture struct {
 	calls chan call
 }
 
-func (c capture) Received(ctx context.Context, m core.Message) {
+func (c capture) Received(ctx context.Context, m core.Message, _ core.Reply) {
 	c.calls <- call{direction: "received", message: m, ctxErr: ctx.Err()}
 }
 
@@ -72,7 +72,7 @@ func TestSignature(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := capture{calls: make(chan call, 1)}
-			if got := post(t, &webhook{secret: secret, core: c}, body, tc.signature).Code; got != tc.status {
+			if got := post(t, &webhook{secret: secret, core: c, client: &client{}}, body, tc.signature).Code; got != tc.status {
 				t.Fatalf("status = %d, want %d", got, tc.status)
 			}
 		})
@@ -90,7 +90,7 @@ func TestDispatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := capture{calls: make(chan call, 1)}
-			if got := post(t, &webhook{secret: secret, core: c}, tc.body, sign(tc.body, secret)).Code; got != http.StatusOK {
+			if got := post(t, &webhook{secret: secret, core: c, client: &client{}}, tc.body, sign(tc.body, secret)).Code; got != http.StatusOK {
 				t.Fatalf("status = %d, want %d", got, http.StatusOK)
 			}
 			select {
@@ -115,7 +115,7 @@ func TestDispatchSurvivesTheRequestEnding(t *testing.T) {
 	// its response.
 	cancel()
 	c := capture{calls: make(chan call, 1)}
-	(&webhook{secret: secret, core: c}).ServeHTTP(httptest.NewRecorder(), r)
+	(&webhook{secret: secret, core: c, client: &client{}}).ServeHTTP(httptest.NewRecorder(), r)
 
 	select {
 	case got := <-c.calls:
@@ -141,7 +141,7 @@ func TestIgnoredEvents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := capture{calls: make(chan call, 1)}
 			// A 2xx keeps respond.io from retrying an event momo will never act on.
-			if got := post(t, &webhook{secret: secret, core: c}, tc.body, sign(tc.body, secret)).Code; got != http.StatusOK {
+			if got := post(t, &webhook{secret: secret, core: c, client: &client{}}, tc.body, sign(tc.body, secret)).Code; got != http.StatusOK {
 				t.Fatalf("status = %d, want %d", got, http.StatusOK)
 			}
 			select {
@@ -165,7 +165,7 @@ func TestMalformedPayload(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := capture{calls: make(chan call, 1)}
-			got := post(t, &webhook{secret: secret, core: c}, tc.body, sign(tc.body, secret)).Code
+			got := post(t, &webhook{secret: secret, core: c, client: &client{}}, tc.body, sign(tc.body, secret)).Code
 			if got != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", got, http.StatusBadRequest)
 			}
@@ -181,6 +181,7 @@ func TestNewRoutes(t *testing.T) {
 		}
 		s.ReceivedSecret = "a"
 		s.SentSecret = "b"
+		s.APIToken = "api-token"
 		return nil
 	}
 	c, err := New(context.Background(), yaml, capture{})
@@ -193,14 +194,15 @@ func TestNewRoutes(t *testing.T) {
 	}
 }
 
-func TestNewRequiresBothSecrets(t *testing.T) {
+func TestNewRequiresItsCredentials(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		apply func(*settings)
 	}{
-		{name: "no secrets", apply: func(*settings) {}},
-		{name: "only received", apply: func(s *settings) { s.ReceivedSecret = "a" }},
-		{name: "only sent", apply: func(s *settings) { s.SentSecret = "b" }},
+		{name: "nothing configured", apply: func(*settings) {}},
+		{name: "only received", apply: func(s *settings) { s.ReceivedSecret = "a"; s.APIToken = "t" }},
+		{name: "only sent", apply: func(s *settings) { s.SentSecret = "b"; s.APIToken = "t" }},
+		{name: "no api token", apply: func(s *settings) { s.ReceivedSecret = "a"; s.SentSecret = "b" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decode := func(v any) error {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -24,8 +25,8 @@ type capture struct {
 	received chan core.Message
 }
 
-func (c capture) Received(_ context.Context, m core.Message) { c.received <- m }
-func (c capture) Sent(_ context.Context, m core.Message)     { c.received <- m }
+func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) { c.received <- m }
+func (c capture) Sent(_ context.Context, m core.Message)                   { c.received <- m }
 
 type harness struct {
 	url   string
@@ -35,14 +36,32 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{
+	h := unserved()
+	h.serve(t, h.core)
+	return h
+}
+
+// newEchoHarness serves the same endpoint with the echo handler, so every prompt
+// is answered with the content it carried.
+func newEchoHarness(t *testing.T) *harness {
+	t.Helper()
+	h := unserved()
+	h.serve(t, core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	return h
+}
+
+func unserved() *harness {
+	return &harness{
 		conns: newConnectionManager(time.Minute, time.Now),
 		core:  capture{received: make(chan core.Message, 4)},
 	}
-	srv := httptest.NewServer(&endpoint{token: token, conns: h.conns, core: h.core})
+}
+
+func (h *harness) serve(t *testing.T, handler core.Handler) {
+	t.Helper()
+	srv := httptest.NewServer(&endpoint{token: token, conns: h.conns, core: handler})
 	t.Cleanup(srv.Close)
 	h.url = srv.URL
-	return h
 }
 
 // request describes one HTTP request to the endpoint. The zero value is a
@@ -159,19 +178,25 @@ func (h *harness) stream(t *testing.T, connID, sessionID string) *sse {
 
 func (s *sse) next(t *testing.T) jsonrpc2.Response {
 	t.Helper()
+	frame := s.nextFrame(t)
+	var resp jsonrpc2.Response
+	if err := json.Unmarshal(frame, &resp); err != nil {
+		t.Fatalf("frame %s: %v", frame, err)
+	}
+	return resp
+}
+
+func (s *sse) nextFrame(t *testing.T) json.RawMessage {
+	t.Helper()
 	select {
 	case frame, open := <-s.frames:
 		if !open {
 			t.Fatal("the stream closed before a message arrived")
 		}
-		var resp jsonrpc2.Response
-		if err := json.Unmarshal(frame, &resp); err != nil {
-			t.Fatalf("frame %s: %v", frame, err)
-		}
-		return resp
+		return frame
 	case <-time.After(2 * time.Second):
 		t.Fatal("no message arrived on the stream")
-		return jsonrpc2.Response{}
+		return nil
 	}
 }
 
