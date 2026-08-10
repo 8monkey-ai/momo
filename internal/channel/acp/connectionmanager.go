@@ -180,8 +180,8 @@ func listening(c *connection) bool {
 }
 
 // send delivers a frame on the connection-scoped stream when sessionID is empty
-// and on that session's stream otherwise, reporting whether a stream took it: a
-// reply nothing is listening to is a failure the caller has to hear about.
+// and on that session's stream otherwise. It reports false when no stream is
+// attached to take the frame.
 func (m *connectionManager) send(connID, sessionID string, frame []byte) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
