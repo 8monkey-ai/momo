@@ -49,8 +49,8 @@ To stop or restart momo, send it `SIGTERM` (or `Ctrl-C`). It stops accepting new
 finishes the ones already in progress, and then exits, so a restart or redeploy does not
 cut off a webhook delivery already under way.
 
-*(WIP)* Handling that outlives the response is drained as well, so no message momo has
-already acknowledged is lost to a restart. It lands with the agent harness.
+*(WIP)* Handling that outlives the response is not drained yet: a turn still running when
+momo is stopped is lost, and the message it was answering is not retried.
 
 ### Health
 
@@ -77,6 +77,21 @@ read_timeout: "30s"
 idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
+
+# The agent momo runs every turn on. Required.
+agent:
+  # Command that starts the ACP agent harness, as a program and its arguments.
+  # Required.
+  command: ["pi", "acp"]
+  # Directory momo gives each conversation a working directory under. Required.
+  data_dir: "/var/lib/momo/conversations"
+  # Directory whose entries are linked into a conversation's working directory
+  # when it is created, so the harness finds its project configuration there.
+  # Default: none
+  template: "/etc/momo/agent-template"
+  # How long a harness is given to shut down and persist its session before momo
+  # kills it. Must be positive. Default: "10s"
+  stop_grace: "10s"
 
 channels:
   respondio:
@@ -108,6 +123,10 @@ respond.io, the token for ACP. Every other setting has a default, so the shortes
 file for respond.io alone is:
 
 ```yaml
+agent:
+  command: ["pi", "acp"]
+  data_dir: "/var/lib/momo/conversations"
+
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
@@ -116,6 +135,8 @@ channels:
 ```
 
 Leave out both channel blocks and momo starts with no channel, serving only `/healthz`.
+Leave out the `agent` block, or name a command momo cannot run, and momo reports the reason
+and exits without serving.
 
 The keys and the ACP token are secrets. Keep the file readable only by the user momo runs as:
 
@@ -210,6 +231,34 @@ clients have to initialize again.
 
 ## Connect an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo echoes every message it receives
-back on the channel it came from.
+The `agent` block names the program momo runs a conversation's turns on: an
+[ACP](https://agentclientprotocol.com) agent harness momo drives over the subprocess's
+stdin and stdout, with momo as the client side. Any harness that speaks ACP version 1
+works; momo uses only the capabilities the harness advertises in its `initialize` answer.
+
+When a message arrives, momo:
+
+1. starts the harness in the conversation's own working directory, `data_dir/{channel}:{contact}`,
+   created on first use and seeded from `template`
+2. resumes the conversation's session when the harness can list and load sessions, and
+   starts a new one otherwise
+3. sends the message as a prompt, collects everything the harness streams back, and
+   delivers it as one reply on the channel the message arrived on
+4. asks the harness to shut down, so it can persist its session, and waits up to
+   `stop_grace` before killing it
+
+A conversation is identified by the channel and the contact together, so contact `123` on
+respond.io and session `123` on the ACP endpoint are two conversations with two sessions.
+One conversation runs one turn at a time; different conversations run at the same time.
+
+The harness works with its own filesystem and process access inside that directory. momo
+advertises no filesystem and no terminal capability, and answers such a request with
+`method not found`. Permission requests are approved automatically, with the most
+permissive option the harness offered.
+
+Everything the harness writes to stderr is copied into momo's log, tagged with the
+conversation. A turn that fails — the harness will not start, will not initialize, or dies
+mid-turn — is logged and dropped; nothing is retried and nothing is sent to the contact.
+
+*(WIP)* Chunked, human-paced delivery and retrying a turn whose harness died land in a
+follow-up release.

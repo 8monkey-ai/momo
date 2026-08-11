@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -28,6 +27,16 @@ type capture struct {
 func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) { c.received <- m }
 func (c capture) Sent(_ context.Context, m core.Message)                   { c.received <- m }
 
+// echo answers every prompt with the content it carried, so the reply path is
+// observable without an agent.
+type echo struct{}
+
+func (echo) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	_ = reply(ctx, m.Content)
+}
+
+func (echo) Sent(context.Context, core.Message) {}
+
 type harness struct {
 	url   string
 	conns *connectionManager
@@ -46,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 func newEchoHarness(t *testing.T) *harness {
 	t.Helper()
 	h := unserved()
-	h.serve(t, core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	h.serve(t, echo{})
 	return h
 }
 

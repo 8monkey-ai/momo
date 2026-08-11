@@ -3,7 +3,6 @@ package respondio
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -134,6 +133,16 @@ func TestReplyReportsARefusal(t *testing.T) {
 	}
 }
 
+// echo answers an incoming message with the content it carried, so the reply
+// path is observable without an agent.
+type echo struct{}
+
+func (echo) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	_ = reply(ctx, m.Content)
+}
+
+func (echo) Sent(context.Context, core.Message) {}
+
 func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -148,7 +157,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 			a := newAPI(t)
 			h := &webhook{
 				secret: secret,
-				core:   core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+				core:   echo{},
 				client: a.client(),
 			}
 			body := payload(tc.event)
@@ -168,7 +177,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 
 func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	a := newAPI(t)
-	log := core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	log := echo{}
 	for _, id := range []string{"111", "222"} {
 		body := `{"event_type":"message.received","contact":{"id":` + id + `},` +
 			`"message":{"message":{"type":"text","text":"hi"}}}`

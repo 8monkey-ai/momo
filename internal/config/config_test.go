@@ -37,6 +37,30 @@ func TestMinimalConfigTakesDefaults(t *testing.T) {
 	}
 }
 
+func TestAgentBlockDecodesIntoTheAgentsOwnSettings(t *testing.T) {
+	cfg := load(t, "agent:\n  command: [pi, acp]\n  data_dir: /var/lib/momo\n")
+	var s struct {
+		Command []string `yaml:"command"`
+		DataDir string   `yaml:"data_dir"`
+	}
+	if err := cfg.Agent(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Command) != 2 || s.Command[0] != "pi" || s.Command[1] != "acp" || s.DataDir != "/var/lib/momo" {
+		t.Errorf("agent settings = %+v, want the command and data directory from the file", s)
+	}
+}
+
+func TestAgentBlockRejectsAMisspelledSetting(t *testing.T) {
+	cfg := load(t, "agent:\n  data_dirr: /var/lib/momo\n")
+	var s struct {
+		DataDir string `yaml:"data_dir"`
+	}
+	if err := cfg.Agent(&s); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}
+
 func TestChannelBlockDecodesIntoTheChannelsOwnSettings(t *testing.T) {
 	cfg := load(t, "listen: \":9000\"\nchannels:\n  respondio:\n    received_secret: a\n")
 	if cfg.Listen != ":9000" {

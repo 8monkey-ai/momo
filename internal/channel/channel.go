@@ -34,6 +34,9 @@ type Decoder func(v any) error
 // channel releases whatever it holds — open streams, goroutines, clients — when
 // that happens. The process decides when that is; a channel never watches for
 // it itself.
+//
+// The handler a channel receives is qualified with the channel's name, so a
+// message carries the contact id the channel knows and nothing more.
 type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
 
 var factories = map[string]Factory{}
@@ -61,7 +64,7 @@ func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler)
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], h)
+		c, err := f(lifetime, configs[name], core.Qualify(name, h))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

@@ -107,10 +107,27 @@ func loadConfig(t *testing.T, body string) *config.Config {
 	return cfg
 }
 
+// agentBlock configures an agent that is never spawned: these tests exercise the
+// HTTP side, and serve refuses to start without an agent.
+const agentBlock = "agent:\n  command: [/bin/true]\n  data_dir: /tmp/momo-test\n"
+
+func TestServeRefusesToStartWithoutAnAgent(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	if err := serve(context.Background(), discard(), cfg, l); err == nil {
+		t.Fatal("serve started without an agent, want it to refuse")
+	}
+}
+
 // TestShutdownDoesNotWaitForAnOpenStream drives shutdown the way run does: the
 // process cancels the context, and the channels are told through their lifetime.
 func TestShutdownDoesNotWaitForAnOpenStream(t *testing.T) {
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nshutdown_timeout: 30s\nchannels:\n  acp:\n    token: secret\n")
+	cfg := loadConfig(t, agentBlock+"listen: \"127.0.0.1:0\"\nshutdown_timeout: 30s\nchannels:\n  acp:\n    token: secret\n")
 	l, err := listen(cfg)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -216,7 +233,7 @@ func TestListenerStopsAcceptingPastTheConfiguredMaximum(t *testing.T) {
 // net/http clears the read deadline before the handler runs, so a stream stays
 // usable while a request's body is still bounded in time.
 func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nread_timeout: \"300ms\"\nchannels:\n  acp:\n    token: secret\n")
+	cfg := loadConfig(t, agentBlock+"listen: \"127.0.0.1:0\"\nread_timeout: \"300ms\"\nchannels:\n  acp:\n    token: secret\n")
 	l, err := listen(cfg)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

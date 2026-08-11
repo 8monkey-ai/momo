@@ -4,7 +4,6 @@ package core
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 )
 
@@ -47,6 +46,7 @@ func TextOf(content []ContentBlock) string {
 }
 
 // Message is a message exchanged with a contact, in the shape the core acts on.
+// Contact identifies the conversation, qualified by the channel it arrived on.
 type Message struct {
 	Contact string
 	Content []ContentBlock
@@ -65,32 +65,27 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
-// EchoHandler answers every incoming message with the content it carried.
-//
-// ponytail: this is the proof that the reply path works end to end, nothing
-// more; the agent harness replaces it.
-type EchoHandler struct {
-	Log *slog.Logger
+// Qualify returns h with every message's contact qualified by the channel it
+// arrived on, so the same contact id on two channels is two conversations. A
+// channel cannot misreport the qualifier because it never supplies it.
+func Qualify(channel string, h Handler) Handler {
+	return qualified{channel: channel, handler: h}
 }
 
-func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
-	h.Log.Info("message received", attrs(m)...)
-	if err := reply(ctx, m.Content); err != nil {
-		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
-	}
+type qualified struct {
+	channel string
+	handler Handler
 }
 
-func (h EchoHandler) Sent(_ context.Context, m Message) {
-	h.Log.Info("message sent", attrs(m)...)
+func (q qualified) Received(ctx context.Context, m Message, reply Reply) {
+	q.handler.Received(ctx, q.qualify(m), reply)
 }
 
-// attrs reports a message's block types and its text, and never the base64 data
-// an image, audio or blob block carries: one of those would write megabytes into
-// a single log record.
-func attrs(m Message) []any {
-	types := make([]string, 0, len(m.Content))
-	for _, block := range m.Content {
-		types = append(types, block.Type)
-	}
-	return []any{"contact", m.Contact, "blocks", types, "text", TextOf(m.Content)}
+func (q qualified) Sent(ctx context.Context, m Message) {
+	q.handler.Sent(ctx, q.qualify(m))
+}
+
+func (q qualified) qualify(m Message) Message {
+	m.Contact = q.channel + ":" + m.Contact
+	return m
 }
