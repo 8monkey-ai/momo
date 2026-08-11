@@ -59,3 +59,49 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
 }
+
+// capture is a handler that keeps the message it was handed.
+type capture struct {
+	message core.Message
+}
+
+func (c *capture) Received(_ context.Context, m core.Message, _ core.Reply) { c.message = m }
+func (c *capture) Sent(_ context.Context, m core.Message)                   { c.message = m }
+
+func TestAMessageCarriesTheChannelItArrivedOnInItsConversation(t *testing.T) {
+	isolateFactories(t)
+	var handed core.Handler
+	Register("stub-c", func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		handed = h
+		return fixed{}, nil
+	})
+	seen := &capture{}
+	if _, err := Build(context.Background(), map[string]Decoder{"stub-c": noSettings}, seen); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	handed.Received(context.Background(), core.Message{Conversation: "123"}, nil)
+
+	if seen.message.Conversation != "stub-c:123" {
+		t.Fatalf("conversation = %q, want \"stub-c:123\"", seen.message.Conversation)
+	}
+}
+
+func TestAnOutgoingMessageIsQualifiedTheSameWay(t *testing.T) {
+	isolateFactories(t)
+	var handed core.Handler
+	Register("stub-d", func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		handed = h
+		return fixed{}, nil
+	})
+	seen := &capture{}
+	if _, err := Build(context.Background(), map[string]Decoder{"stub-d": noSettings}, seen); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	handed.Sent(context.Background(), core.Message{Conversation: "456"})
+
+	if seen.message.Conversation != "stub-d:456" {
+		t.Fatalf("conversation = %q, want \"stub-d:456\"", seen.message.Conversation)
+	}
+}

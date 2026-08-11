@@ -3,7 +3,6 @@ package respondio
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -148,7 +147,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 			a := newAPI(t)
 			h := &webhook{
 				secret: secret,
-				core:   core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+				core:   echo{},
 				client: a.client(),
 			}
 			body := payload(tc.event)
@@ -168,7 +167,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 
 func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	a := newAPI(t)
-	log := core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	log := echo{}
 	for _, id := range []string{"111", "222"} {
 		body := `{"event_type":"message.received","contact":{"id":` + id + `},` +
 			`"message":{"message":{"type":"text","text":"hi"}}}`
@@ -202,3 +201,14 @@ func TestNewDefaultsTheAPIURL(t *testing.T) {
 		t.Fatalf("api_url = %q, want respond.io's v2 API", h.client.url)
 	}
 }
+
+// echo answers every incoming message with the content it carried: the tests
+// here are about the channel, so the handler behind it says as little as
+// possible.
+type echo struct{}
+
+func (echo) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	_ = reply(ctx, m.Content)
+}
+
+func (echo) Sent(context.Context, core.Message) {}

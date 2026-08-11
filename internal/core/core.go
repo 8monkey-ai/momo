@@ -48,8 +48,12 @@ func TextOf(content []ContentBlock) string {
 
 // Message is a message exchanged with a contact, in the shape the core acts on.
 type Message struct {
-	Contact string
-	Content []ContentBlock
+	// Conversation names the conversation the message belongs to, qualified by the
+	// channel it arrived on: two channels using the same contact id are two
+	// conversations. A channel fills in its own contact id and the qualification
+	// is added for it, so it cannot be forgotten or misreported.
+	Conversation string
+	Content      []ContentBlock
 }
 
 // Reply sends a reply on the channel the message arrived on. The destination is
@@ -65,22 +69,34 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
-// EchoHandler answers every incoming message with the content it carried.
-//
-// ponytail: this is the proof that the reply path works end to end, nothing
-// more; the agent harness replaces it.
-type EchoHandler struct {
-	Log *slog.Logger
+// Agent runs one turn of a conversation: the message goes in as a prompt and the
+// agent's whole reply comes back. What an agent is, where it runs and what it
+// speaks belong to the implementation, so a turn is expressible here without any
+// of it.
+type Agent interface {
+	Turn(ctx context.Context, conversation string, prompt []ContentBlock) ([]ContentBlock, error)
 }
 
-func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
+// AgentHandler answers an incoming message with the agent's reply for the
+// conversation it belongs to.
+type AgentHandler struct {
+	Agent Agent
+	Log   *slog.Logger
+}
+
+func (h AgentHandler) Received(ctx context.Context, m Message, reply Reply) {
 	h.Log.Info("message received", attrs(m)...)
-	if err := reply(ctx, m.Content); err != nil {
-		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+	content, err := h.Agent.Turn(ctx, m.Conversation, m.Content)
+	if err != nil {
+		h.Log.Error("turn failed", "conversation", m.Conversation, "error", err)
+		return
+	}
+	if err := reply(ctx, content); err != nil {
+		h.Log.Error("reply failed", "conversation", m.Conversation, "error", err)
 	}
 }
 
-func (h EchoHandler) Sent(_ context.Context, m Message) {
+func (h AgentHandler) Sent(_ context.Context, m Message) {
 	h.Log.Info("message sent", attrs(m)...)
 }
 
@@ -92,5 +108,5 @@ func attrs(m Message) []any {
 	for _, block := range m.Content {
 		types = append(types, block.Type)
 	}
-	return []any{"contact", m.Contact, "blocks", types, "text", TextOf(m.Content)}
+	return []any{"conversation", m.Conversation, "blocks", types, "text", TextOf(m.Content)}
 }

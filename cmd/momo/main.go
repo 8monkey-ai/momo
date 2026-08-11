@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/netutil"
 
+	"github.com/8monkey-ai/momo/internal/agent"
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -103,7 +104,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	lifetime, release := context.WithCancel(context.Background())
 	defer release()
 
-	instances, err := channel.Build(lifetime, cfg.Channels, core.EchoHandler{Log: log})
+	a, err := agent.New(cfg.Agent, log)
+	if err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.AgentHandler{Agent: a, Log: log})
 	if err != nil {
 		return err
 	}

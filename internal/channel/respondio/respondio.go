@@ -127,7 +127,7 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	contactID := strconv.FormatInt(ev.Contact.ID, 10)
 	m := core.Message{
-		Contact: contactID,
+		Conversation: contactID,
 		// respond.io speaks plain text; the core's content blocks are ACP's, so the
 		// conversion happens here rather than in the core.
 		Content: core.Text(ev.Message.Message.Text),

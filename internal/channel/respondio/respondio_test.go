@@ -95,7 +95,7 @@ func TestDispatch(t *testing.T) {
 			}
 			select {
 			case got := <-c.calls:
-				want := call{direction: tc.direction, message: core.Message{Contact: "12345", Content: core.Text("hello")}}
+				want := call{direction: tc.direction, message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("core called with %+v, want %+v", got, want)
 				}

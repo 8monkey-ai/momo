@@ -61,11 +61,32 @@ func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler)
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], h)
+		c, err := f(lifetime, configs[name], qualified{name: name, handler: h})
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
 		instances = append(instances, Instance{Name: name, Channel: c})
 	}
 	return instances, nil
+}
+
+// qualified names the channel a message arrived on in front of the contact id
+// the channel supplied. Every channel gets its handler through Build, so a
+// channel has nothing to fill in and no way to report the wrong name.
+type qualified struct {
+	name    string
+	handler core.Handler
+}
+
+func (q qualified) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	q.handler.Received(ctx, q.qualify(m), reply)
+}
+
+func (q qualified) Sent(ctx context.Context, m core.Message) {
+	q.handler.Sent(ctx, q.qualify(m))
+}
+
+func (q qualified) qualify(m core.Message) core.Message {
+	m.Conversation = q.name + ":" + m.Conversation
+	return m
 }

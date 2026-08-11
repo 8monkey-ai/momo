@@ -8,15 +8,16 @@ import (
 	"strings"
 	"testing"
 
+	protocol "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
 // notification is the session/update message momo emits, read off the stream as
 // the client sees it.
 type notification struct {
-	Method string       `json:"method"`
-	ID     *int         `json:"id"`
-	Params updateParams `json:"params"`
+	Method string                `json:"method"`
+	ID     *int                  `json:"id"`
+	Params protocol.UpdateParams `json:"params"`
 }
 
 func (s *sse) nextUpdate(t *testing.T) notification {
@@ -38,7 +39,7 @@ func (s *sse) nextUpdate(t *testing.T) notification {
 func (h *harness) prompt(t *testing.T, connID, sessionID, blocks string) {
 	t.Helper()
 	status(t, h.do(t, request{
-		body:   rpc(3, methodPrompt, `{"sessionId":"`+sessionID+`","prompt":[`+blocks+`]}`),
+		body:   rpc(3, protocol.MethodPrompt, `{"sessionId":"`+sessionID+`","prompt":[`+blocks+`]}`),
 		connID: connID, sessionID: sessionID,
 	}), http.StatusAccepted)
 }
@@ -64,7 +65,7 @@ func TestEchoRepliesOnTheSessionStreamBeforeAnsweringThePrompt(t *testing.T) {
 		}
 	}
 	// Only after the content does the turn end.
-	var completed promptResult
+	var completed protocol.PromptResult
 	unmarshalResult(t, sessionStream.next(t), &completed)
 	if completed.StopReason != "end_turn" {
 		t.Fatalf("stopReason = %q, want \"end_turn\"", completed.StopReason)
@@ -102,7 +103,7 @@ func TestEachSessionIsAnsweredOnItsOwnStream(t *testing.T) {
 	}
 	// The first session's stream carries its own prompt response and nothing of
 	// the second session's turn.
-	var completed promptResult
+	var completed protocol.PromptResult
 	unmarshalResult(t, firstStream.next(t), &completed)
 	firstStream.silent(t)
 }
@@ -125,8 +126,8 @@ func (h *harness) newSessionOn(t *testing.T, connID string) session {
 func (h *harness) createSession(t *testing.T, connID string) string {
 	t.Helper()
 	connStream := h.stream(t, connID, "")
-	status(t, h.do(t, request{body: rpc(2, methodNewSession, "{}"), connID: connID}), http.StatusAccepted)
-	var created newSessionResult
+	status(t, h.do(t, request{body: rpc(2, protocol.MethodNewSession, "{}"), connID: connID}), http.StatusAccepted)
+	var created protocol.NewSessionResult
 	unmarshalResult(t, connStream.next(t), &created)
 	return created.SessionID
 }

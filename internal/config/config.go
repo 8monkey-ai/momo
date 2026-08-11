@@ -14,8 +14,8 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 )
 
-// Config is the configuration momo runs with. Channel blocks stay undecoded so
-// that each channel owns its own settings.
+// Config is the configuration momo runs with. The agent block and the channel
+// blocks stay undecoded so that each of them owns its own settings.
 type Config struct {
 	Listen            string
 	MaxConnections    int
@@ -23,6 +23,7 @@ type Config struct {
 	ReadTimeout       time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+	Agent             channel.Decoder
 	Channels          map[string]channel.Decoder
 }
 
@@ -33,6 +34,7 @@ type file struct {
 	ReadTimeout       *time.Duration       `yaml:"read_timeout"`
 	IdleTimeout       *time.Duration       `yaml:"idle_timeout"`
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
+	Agent             yaml.Node            `yaml:"agent"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
 }
 
@@ -69,6 +71,7 @@ func parse(raw []byte) (*Config, error) {
 		ReadTimeout:     duration(f.ReadTimeout, 30*time.Second),
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
+		Agent:           decoderFor(f.Agent),
 		Channels:        map[string]channel.Decoder{},
 	}
 	if cfg.Listen == "" {
@@ -100,7 +103,7 @@ func decoderFor(node yaml.Node) channel.Decoder {
 			return nil
 		}
 		// yaml.Node.Decode does not inherit KnownFields, so the block is decoded
-		// through a strict decoder of its own: a misspelled channel setting is an
+		// through a strict decoder of its own: a misspelled setting in a block is an
 		// error here too, not a silently kept default.
 		raw, err := yaml.Marshal(&node)
 		if err != nil {

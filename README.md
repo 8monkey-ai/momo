@@ -78,6 +78,18 @@ idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
 
+agent:
+  # Command momo runs to reach the agent, as the program followed by its
+  # arguments. It must speak ACP on stdin and stdout. Required.
+  command: ["claude-code-acp"]
+  # Absolute path momo keeps one working directory per conversation under.
+  # Required.
+  data_dir: "/var/lib/momo"
+  # Directory copied into a conversation's working directory when momo creates
+  # it, so the agent finds its project configuration where it works. Files
+  # already in the conversation's directory are left alone. Optional.
+  template: "/etc/momo/agent-template"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -108,12 +120,19 @@ respond.io, the token for ACP. Every other setting has a default, so the shortes
 file for respond.io alone is:
 
 ```yaml
+agent:
+  command: ["claude-code-acp"]
+  data_dir: "/var/lib/momo"
+
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
     sent_secret: "paste the message.sent signing key"
     api_token: "paste the respond.io API access token"
 ```
+
+The `agent` block is required: momo has nothing to answer with without it, and it reports a
+missing or unusable setting and exits instead of serving.
 
 Leave out both channel blocks and momo starts with no channel, serving only `/healthz`.
 
@@ -210,6 +229,36 @@ clients have to initialize again.
 
 ## Connect an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo echoes every message it receives
-back on the channel it came from.
+momo answers a message by running the agent named in the `agent` block. Every message is
+one turn:
+
+1. momo starts `command` as a subprocess and speaks [ACP](https://agentclientprotocol.com)
+   to it over its stdin and stdout, as the client side.
+2. The turn runs in the conversation's own working directory under `data_dir`, seeded from
+   `template` the first time momo creates it.
+3. momo continues the session that directory already holds, or starts a new one.
+4. The agent's message is collected as it streams and delivered as one reply on the channel
+   the message arrived on.
+5. momo signals the subprocess to stop and waits for it to exit, so the agent can write its
+   session down before it goes.
+
+A conversation is named by the channel it arrived on and the contact on that channel, so a
+respond.io contact and an ACP peer with the same id are two conversations with two
+directories and two agent sessions.
+
+momo stores nothing of its own. The session belonging to a conversation is found by asking
+the agent which sessions it has in that conversation's working directory, so an agent that
+cannot list and resume its sessions starts a fresh session on every message. What the
+conversation remembers is then whatever the agent itself wrote in that directory.
+
+What the agent asks momo for is answered the same way every time: a permission request is
+approved with the allowing option the agent offered, and anything else — reading a file,
+running a terminal — is answered `method not found`, because the agent already has its own
+filesystem and process access in its working directory.
+
+A turn that fails is logged and dropped: there is no retry, and the contact gets no reply.
+The agent's stderr is logged as it arrives, which is where a failing agent explains itself.
+
+*(WIP)* One turn at a time runs per conversation, and a second message for the same
+conversation waits for the first to finish. Ordered queueing, steering a turn in progress
+and recovering a died agent land in a follow-up release.

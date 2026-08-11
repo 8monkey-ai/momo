@@ -94,9 +94,13 @@ func TestMuxReportsAPathServedTwice(t *testing.T) {
 	}
 }
 
+// loadConfig writes a configuration file and loads it. Every configuration momo
+// serves with names an agent, and these tests are about the server rather than
+// the agent, so a harness that is never prompted is added for them.
 func loadConfig(t *testing.T, body string) *config.Config {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "momo.yaml")
+	body += "agent:\n  command: [\"/bin/echo\"]\n  data_dir: \"" + t.TempDir() + "\"\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
