@@ -103,7 +103,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	lifetime, release := context.WithCancel(context.Background())
 	defer release()
 
-	instances, err := channel.Build(lifetime, cfg.Channels, core.LogHandler{Log: log})
+	instances, err := channel.Build(lifetime, cfg.Channels, core.EchoHandler{Log: log})
 	if err != nil {
 		return err
 	}

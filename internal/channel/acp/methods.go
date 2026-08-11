@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/sourcegraph/jsonrpc2"
@@ -20,6 +21,8 @@ const (
 	methodNewSession = "session/new"
 	methodPrompt     = "session/prompt"
 	methodCancel     = "session/cancel"
+	// methodUpdate is momo's only agent-to-client message: the reply to a prompt.
+	methodUpdate = "session/update"
 )
 
 // sessionScoped reports whether a method acts on one session and therefore needs
@@ -74,6 +77,18 @@ type promptResult struct {
 	StopReason string `json:"stopReason"`
 }
 
+// updateParams is a session/update notification's params: one content block of
+// the agent's message, in ACP v1's shape.
+type updateParams struct {
+	SessionID string `json:"sessionId"`
+	Update    update `json:"update"`
+}
+
+type update struct {
+	SessionUpdate string            `json:"sessionUpdate"`
+	Content       core.ContentBlock `json:"content"`
+}
+
 func (e *endpoint) initialize(w http.ResponseWriter, req *jsonrpc2.Request) {
 	connID := e.conns.newConnection()
 	w.Header().Set(connectionHeader, connID)
@@ -97,7 +112,7 @@ func (e *endpoint) answer(ctx context.Context, req *jsonrpc2.Request, connID, se
 	case methodNewSession:
 		return e.newSession(req, connID)
 	case methodPrompt:
-		return e.prompt(ctx, req, sessionID)
+		return e.prompt(ctx, req, connID, sessionID)
 	case methodCancel:
 		// Nothing is running to cancel: session/prompt completes before it is
 		// answered. As a notification it is not answered at all.
@@ -121,7 +136,7 @@ func (e *endpoint) newSession(req *jsonrpc2.Request, connID string) *jsonrpc2.Re
 	return result(req.ID, newSessionResult{SessionID: sessionID})
 }
 
-func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, sessionID string) *jsonrpc2.Response {
+func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, sessionID string) *jsonrpc2.Response {
 	var p promptParams
 	if err := params(req, &p); err != nil {
 		return errorResponse(req.ID, jsonrpc2.CodeInvalidParams, err.Error())
@@ -135,10 +150,31 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, sessionID 
 		}
 	}
 	// The client's prompt is the contact speaking, and momo issues the session
-	// id, so the session is the contact. The other direction, core.Sent, needs an
-	// agent to produce a reply and there is none yet.
-	e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt})
+	// id, so the session is the contact. Received returns once the reply has been
+	// emitted, so the turn is answered after its content, as v1 requires.
+	e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt}, e.reply(connID, sessionID))
 	return result(req.ID, promptResult{StopReason: "end_turn"})
+}
+
+// reply emits the blocks as session/update notifications on the stream of the
+// session the prompt arrived on, one notification per block, in order. The
+// connection manager is shared; the destination is what this closure holds.
+func (e *endpoint) reply(connID, sessionID string) core.Reply {
+	return func(_ context.Context, content []core.ContentBlock) error {
+		for _, block := range content {
+			notif := &jsonrpc2.Request{Method: methodUpdate, Notif: true}
+			if err := notif.SetParams(updateParams{
+				SessionID: sessionID,
+				Update:    update{SessionUpdate: "agent_message_chunk", Content: block},
+			}); err != nil {
+				return err
+			}
+			if !e.conns.send(connID, sessionID, frame(notif)) {
+				return fmt.Errorf("session %s: nothing is listening to the session stream", sessionID)
+			}
+		}
+		return nil
+	}
 }
 
 func params(req *jsonrpc2.Request, v any) error {

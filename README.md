@@ -84,6 +84,10 @@ channels:
     received_secret: "paste the message.received signing key"
     # Signing key of the webhook that fires on outgoing messages. Required.
     sent_secret: "paste the message.sent signing key"
+    # API token momo sends replies with. Required.
+    api_token: "paste the respond.io API access token"
+    # Base URL of the respond.io API. Default: "https://api.respond.io/v2"
+    api_url: "https://api.respond.io/v2"
     # Paths momo serves the two webhooks on.
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
@@ -99,15 +103,16 @@ channels:
     connection_grace: "5m"
 ```
 
-Each channel requires only its credentials: the two signing keys for respond.io, the token
-for ACP. Every other setting has a default, so the shortest working file for respond.io
-alone is:
+Each channel requires only its credentials: the two signing keys and the API token for
+respond.io, the token for ACP. Every other setting has a default, so the shortest working
+file for respond.io alone is:
 
 ```yaml
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
     sent_secret: "paste the message.sent signing key"
+    api_token: "paste the respond.io API access token"
 ```
 
 Leave out both channel blocks and momo starts with no channel, serving only `/healthz`.
@@ -152,6 +157,11 @@ Both webhooks may also deliver event types momo does not act on, such as contact
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
 
+momo answers an incoming message with one call to respond.io's send-a-message API,
+`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
+messages (`message.sent`) are recorded only: they include momo's own replies, and
+answering them would make momo talk to itself.
+
 ## Connect an ACP client
 
 The `acp` block turns on a second channel: an [ACP](https://agentclientprotocol.com)
@@ -179,8 +189,12 @@ The client connects like this:
    arrives on the connection-scoped stream.
 4. `GET` the endpoint again with both the connection id and `Acp-Session-Id`, to open that
    session's stream.
-5. `POST` `session/prompt` with both headers. The prompt reaches momo, and the response
-   arrives on the session's stream.
+5. `POST` `session/prompt` with both headers. The prompt reaches momo, and the reply and
+   the response arrive on that session's stream.
+
+momo answers a prompt on the session's own stream: one `session/update` notification per
+content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
+response with `stopReason: "end_turn"`, always after the content it is ending.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
@@ -197,5 +211,5 @@ clients have to initialize again.
 ## Connect an agent
 
 *(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo receives, verifies and logs
-channel events.
+contact — lands in a follow-up release. Until then, momo echoes every message it receives
+back on the channel it came from.

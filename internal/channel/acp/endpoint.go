@@ -118,6 +118,8 @@ func (e *endpoint) dispatch(w http.ResponseWriter, r *http.Request, req *jsonrpc
 	if resp == nil {
 		return
 	}
+	// A response nothing listens for is lost; the client learns that from its own
+	// stream being gone, so there is nothing to report on the POST.
 	e.conns.send(connID, streamOf(req.Method, sessionID), frame(resp))
 }
 
@@ -195,24 +197,31 @@ func isBatch(body []byte) bool {
 	return strings.HasPrefix(trimmed, "[")
 }
 
-func frame(resp *jsonrpc2.Response) []byte {
-	body, err := json.Marshal(resp)
+// frame wraps any JSON-RPC message, response or notification, in the SSE event
+// format: the single place that format is decided.
+func frame(msg any) []byte {
+	body, err := json.Marshal(msg)
 	if err != nil {
-		body, _ = json.Marshal(errorResponse(resp.ID, jsonrpc2.CodeInternalError, "the response could not be encoded"))
+		body, _ = json.Marshal(nullIDError(jsonrpc2.CodeInternalError, "the message could not be encoded"))
 	}
 	return append(append([]byte("data: "), body...), '\n', '\n')
 }
 
 // writeError answers a message momo refused before it could know the id to
-// answer under. jsonrpc2.Response cannot carry the null id JSON-RPC 2.0 requires
-// in that case, so only the envelope is built here.
+// answer under.
 func writeError(w http.ResponseWriter, status int, code int64, message string) {
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      nil,
-		"error":   &jsonrpc2.Error{Code: code, Message: message},
-	})
+	body, _ := json.Marshal(nullIDError(code, message))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// nullIDError is an error carrying the null id JSON-RPC 2.0 requires when the id
+// is unknown. jsonrpc2.Response cannot express it, so the envelope is built here.
+func nullIDError(code int64, message string) map[string]any {
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"id":      nil,
+		"error":   &jsonrpc2.Error{Code: code, Message: message},
+	}
 }

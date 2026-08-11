@@ -1,4 +1,5 @@
-// Package respondio receives the webhook events respond.io pushes to momo.
+// Package respondio receives the webhook events respond.io pushes to momo and
+// answers them over respond.io's REST API.
 package respondio
 
 import (
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -38,6 +40,8 @@ type settings struct {
 	SentSecret     string `yaml:"sent_secret"`
 	ReceivedPath   string `yaml:"received_path"`
 	SentPath       string `yaml:"sent_path"`
+	APIToken       string `yaml:"api_token"`
+	APIURL         string `yaml:"api_url"`
 }
 
 type respondio struct {
@@ -53,6 +57,7 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",
+		APIURL:       "https://api.respond.io/v2",
 	}
 	if err := decode(&s); err != nil {
 		return nil, err
@@ -60,15 +65,21 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	if s.ReceivedSecret == "" || s.SentSecret == "" {
 		return nil, errors.New("received_secret and sent_secret are required")
 	}
+	// A channel that cannot answer is a misconfiguration, not a receive-only mode.
+	if s.APIToken == "" {
+		return nil, errors.New("api_token is required")
+	}
+	c := &client{url: s.APIURL, token: s.APIToken, http: &http.Client{Timeout: 30 * time.Second}}
 	return respondio{routes: []channel.Route{
-		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h}},
-		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h}},
+		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c}},
+		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c}},
 	}}, nil
 }
 
 type webhook struct {
 	secret string
 	core   core.Handler
+	client *client
 }
 
 type event struct {
@@ -114,16 +125,19 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	if ev.Message.Message.Type != textMessage {
 		return
 	}
+	contactID := strconv.FormatInt(ev.Contact.ID, 10)
 	m := core.Message{
-		Contact: strconv.FormatInt(ev.Contact.ID, 10),
+		Contact: contactID,
 		// respond.io speaks plain text; the core's content blocks are ACP's, so the
 		// conversion happens here rather than in the core.
 		Content: core.Text(ev.Message.Message.Text),
 	}
 	switch ev.EventType {
 	case eventReceived:
-		h.core.Received(ctx, m)
+		h.core.Received(ctx, m, h.client.reply(contactID))
 	case eventSent:
+		// An outgoing message is momo's own reply as often as an operator's; nothing
+		// answers it.
 		h.core.Sent(ctx, m)
 	}
 }
