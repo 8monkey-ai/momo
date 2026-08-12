@@ -26,12 +26,37 @@ const (
 	StopReasonEndTurn = "end_turn"
 )
 
+// InitializeParams opens the handshake with the version the sender speaks.
+type InitializeParams struct {
+	ProtocolVersion    int                `json:"protocolVersion"`
+	ClientCapabilities ClientCapabilities `json:"clientCapabilities"`
+}
+
+// ClientCapabilities is empty because momo holds no editor state and no
+// terminal: v1 reads an absent capability as unsupported, which is what momo
+// wants for every capability it does not supply.
+type ClientCapabilities struct{}
+
+// InitializeResult holds the negotiated version, the one part of the answer momo
+// reads.
+type InitializeResult struct {
+	ProtocolVersion int `json:"protocolVersion"`
+}
+
+// NewSessionParams names the directory the session works in. v1 requires both
+// members, and momo supplies no MCP server, so the list is empty and never nil.
+type NewSessionParams struct {
+	Cwd        string `json:"cwd"`
+	McpServers []any  `json:"mcpServers"`
+}
+
 type NewSessionResult struct {
 	SessionID string `json:"sessionId"`
 }
 
 type PromptParams struct {
-	Prompt []core.ContentBlock `json:"prompt"`
+	SessionID string              `json:"sessionId"`
+	Prompt    []core.ContentBlock `json:"prompt"`
 }
 
 type PromptResult struct {

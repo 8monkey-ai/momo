@@ -20,6 +20,18 @@ import (
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
+// echoAgent answers with the content the message carried, so a test drives the
+// reply path with no agent subprocess.
+type echoAgent struct{}
+
+func (echoAgent) Turn(_ context.Context, m core.Message) ([]core.ContentBlock, error) {
+	return m.Content, nil
+}
+
+func echoHandler() core.Handler {
+	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
+}
+
 const token = "operator-token"
 
 type capture struct {
@@ -47,7 +59,7 @@ func newHarness(t *testing.T) *harness {
 func newEchoHarness(t *testing.T) *harness {
 	t.Helper()
 	h := unserved()
-	h.serve(t, core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	h.serve(t, echoHandler())
 	return h
 }
 
