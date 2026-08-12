@@ -16,6 +16,7 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
+	wire "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -134,7 +135,7 @@ func status(t *testing.T, resp *http.Response, want int) {
 // initialize opens a connection and returns its id.
 func (h *harness) initialize(t *testing.T) string {
 	t.Helper()
-	resp := h.do(t, request{body: rpc(1, methodInitialize, `{"protocolVersion":1,"clientCapabilities":{}}`)})
+	resp := h.do(t, request{body: rpc(1, wire.MethodInitialize, `{"protocolVersion":1,"clientCapabilities":{}}`)})
 	status(t, resp, http.StatusOK)
 	var body struct {
 		Result initializeResult `json:"result"`
@@ -214,11 +215,11 @@ func (h *harness) session(t *testing.T) (connID, sessionID string, connStream, s
 	t.Helper()
 	connID = h.initialize(t)
 	connStream = h.stream(t, connID, "")
-	status(t, h.do(t, request{body: rpc(2, methodNewSession,
+	status(t, h.do(t, request{body: rpc(2, wire.MethodNewSession,
 		`{"cwd":"/workspace","mcpServers":[]}`), connID: connID}), http.StatusAccepted)
 	// The response to session/new lands on the connection-scoped stream: the
 	// client has no session id to open a session-scoped one with yet.
-	var created newSessionResult
+	var created wire.NewSessionResult
 	unmarshalResult(t, connStream.next(t), &created)
 	if created.SessionID == "" {
 		t.Fatal("session/new returned no sessionId")
@@ -252,7 +253,7 @@ func TestTokenIsRequiredOnEveryMethod(t *testing.T) {
 				h := newHarness(t)
 				req := tc.req
 				req.method = method
-				req.body = rpc(1, methodInitialize, "{}")
+				req.body = rpc(1, wire.MethodInitialize, "{}")
 				req.accept = "text/event-stream"
 				status(t, h.do(t, req), http.StatusUnauthorized)
 				if len(h.conns.conns) != 0 {
@@ -268,7 +269,7 @@ func TestTokenSchemeIsCaseInsensitive(t *testing.T) {
 	// lowercased.
 	h := newHarness(t)
 	r, err := http.NewRequest(http.MethodPost, h.url,
-		strings.NewReader(rpc(1, methodInitialize, "{}")))
+		strings.NewReader(rpc(1, wire.MethodInitialize, "{}")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestTokenSchemeIsCaseInsensitive(t *testing.T) {
 func TestContentNegotiationRejections(t *testing.T) {
 	h := newHarness(t)
 	t.Run("POST without json content type", func(t *testing.T) {
-		status(t, h.do(t, request{contentType: "text/plain", body: rpc(1, methodInitialize, "{}")}),
+		status(t, h.do(t, request{contentType: "text/plain", body: rpc(1, wire.MethodInitialize, "{}")}),
 			http.StatusUnsupportedMediaType)
 	})
 	t.Run("GET without event-stream accept", func(t *testing.T) {
@@ -312,22 +313,22 @@ func TestIdentityHeaderRejections(t *testing.T) {
 	}{
 		{
 			name: "POST without a connection id",
-			req:  request{body: rpc(3, methodNewSession, "{}")},
+			req:  request{body: rpc(3, wire.MethodNewSession, "{}")},
 			want: http.StatusBadRequest,
 		},
 		{
 			name: "POST with an unknown connection id",
-			req:  request{body: rpc(3, methodNewSession, "{}"), connID: "0123456789abcdef"},
+			req:  request{body: rpc(3, wire.MethodNewSession, "{}"), connID: "0123456789abcdef"},
 			want: http.StatusNotFound,
 		},
 		{
 			name: "session-scoped POST without a session id",
-			req:  request{body: rpc(3, methodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`), connID: connID},
+			req:  request{body: rpc(3, wire.MethodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`), connID: connID},
 			want: http.StatusBadRequest,
 		},
 		{
 			name: "session-scoped POST with a session of another connection",
-			req: request{body: rpc(3, methodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`),
+			req: request{body: rpc(3, wire.MethodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`),
 				connID: other, sessionID: sessionID},
 			want: http.StatusNotFound,
 		},
@@ -361,7 +362,7 @@ func TestIdentityHeaderRejections(t *testing.T) {
 
 func TestBatchIsRefused(t *testing.T) {
 	h := newHarness(t)
-	resp := h.do(t, request{body: `[` + rpc(1, methodInitialize, "{}") + `]`})
+	resp := h.do(t, request{body: `[` + rpc(1, wire.MethodInitialize, "{}") + `]`})
 	status(t, resp, http.StatusNotImplemented)
 	if code := rpcErrorCode(t, resp); code != jsonrpc2.CodeInvalidRequest {
 		t.Fatalf("code = %d, want %d", code, jsonrpc2.CodeInvalidRequest)
@@ -395,9 +396,9 @@ func TestMethodsThatNeedAnIdRefuseANotification(t *testing.T) {
 		method string
 		req    request
 	}{
-		{method: methodInitialize},
-		{method: methodNewSession, req: request{connID: connID}},
-		{method: methodPrompt, req: request{connID: connID, sessionID: sessionID}},
+		{method: wire.MethodInitialize},
+		{method: wire.MethodNewSession, req: request{connID: connID}},
+		{method: wire.MethodPrompt, req: request{connID: connID, sessionID: sessionID}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			req := tc.req
@@ -412,7 +413,7 @@ func TestMethodsThatNeedAnIdRefuseANotification(t *testing.T) {
 	t.Run("session/cancel is accepted without an id", func(t *testing.T) {
 		cancelConn, cancelSession, _, sessionStream := h.session(t)
 		status(t, h.do(t, request{
-			body:   `{"jsonrpc":"2.0","method":"` + methodCancel + `","params":{"sessionId":"` + cancelSession + `"}}`,
+			body:   `{"jsonrpc":"2.0","method":"` + wire.MethodCancel + `","params":{"sessionId":"` + cancelSession + `"}}`,
 			connID: cancelConn, sessionID: cancelSession,
 		}), http.StatusAccepted)
 		sessionStream.silent(t)
@@ -448,7 +449,7 @@ func TestPromptReachesTheCoreWithItsBlocksAsSent(t *testing.T) {
 		`{"type":"audio","data":"AAAA","mimeType":"audio/wav"},` +
 		`{"type":"resource","resource":{"uri":"file:///notes.md","text":"notes"}},` +
 		`{"type":"resource_link","uri":"file:///notes.md","name":"notes.md"}]}`
-	status(t, h.do(t, request{body: rpc(3, methodPrompt, prompt), connID: connID, sessionID: sessionID}),
+	status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt, prompt), connID: connID, sessionID: sessionID}),
 		http.StatusAccepted)
 
 	want := core.Message{Contact: sessionID, Content: []core.ContentBlock{
@@ -468,7 +469,7 @@ func TestPromptReachesTheCoreWithItsBlocksAsSent(t *testing.T) {
 
 	// The prompt response lands on the session-scoped stream, not the
 	// connection-scoped one.
-	var completed promptResult
+	var completed wire.PromptResult
 	unmarshalResult(t, sessionStream.next(t), &completed)
 	if completed.StopReason != "end_turn" {
 		t.Fatalf("stopReason = %q, want \"end_turn\"", completed.StopReason)
@@ -488,7 +489,7 @@ func TestPromptWithoutUsableContentIsInvalidParams(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			connID, sessionID, _, sessionStream := h.session(t)
-			status(t, h.do(t, request{body: rpc(3, methodPrompt, tc.params),
+			status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt, tc.params),
 				connID: connID, sessionID: sessionID}), http.StatusAccepted)
 
 			if code := sessionStream.next(t).Error.Code; code != jsonrpc2.CodeInvalidParams {
@@ -513,9 +514,9 @@ func TestUnimplementedMethodLeavesTheConnectionUsable(t *testing.T) {
 		t.Fatalf("code = %d, want %d", code, jsonrpc2.CodeMethodNotFound)
 	}
 
-	status(t, h.do(t, request{body: rpc(4, methodPrompt, `{"prompt":[{"type":"text","text":"still here"}]}`),
+	status(t, h.do(t, request{body: rpc(4, wire.MethodPrompt, `{"prompt":[{"type":"text","text":"still here"}]}`),
 		connID: connID, sessionID: sessionID}), http.StatusAccepted)
-	var completed promptResult
+	var completed wire.PromptResult
 	unmarshalResult(t, sessionStream.next(t), &completed)
 }
 
@@ -535,7 +536,7 @@ func TestDeleteReleasesSessionsAndClosesStreams(t *testing.T) {
 			t.Fatalf("the %s stream stayed open after DELETE", name)
 		}
 	}
-	status(t, h.do(t, request{body: rpc(3, methodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`),
+	status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt, `{"prompt":[{"type":"text","text":"hi"}]}`),
 		connID: connID, sessionID: sessionID}), http.StatusNotFound)
 }
 
