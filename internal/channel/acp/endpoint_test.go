@@ -452,7 +452,7 @@ func TestPromptReachesTheCoreWithItsBlocksAsSent(t *testing.T) {
 	status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt, prompt), connID: connID, sessionID: sessionID}),
 		http.StatusAccepted)
 
-	want := core.Message{Contact: sessionID, Content: []core.ContentBlock{
+	want := core.Message{Conversation: sessionID, Content: []core.ContentBlock{
 		{Type: "text", Text: "hello"},
 		{Type: "audio", Data: "AAAA", MimeType: "audio/wav"},
 		{Type: "resource", Resource: &core.Resource{URI: "file:///notes.md", Text: "notes"}},

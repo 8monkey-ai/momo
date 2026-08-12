@@ -48,8 +48,11 @@ func TextOf(content []ContentBlock) string {
 
 // Message is a message exchanged with a contact, in the shape the core acts on.
 type Message struct {
-	Contact string
-	Content []ContentBlock
+	// Conversation is the conversation the message belongs to. A channel fills it
+	// with its own contact id, and channel.Build qualifies it with the channel
+	// name, so a handler always reads {channel}:{contact}.
+	Conversation string
+	Content      []ContentBlock
 }
 
 // Reply sends a reply on the channel the message arrived on. The destination is
@@ -76,7 +79,7 @@ type EchoHandler struct {
 func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
 	h.Log.Info("message received", attrs(m)...)
 	if err := reply(ctx, m.Content); err != nil {
-		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+		h.Log.Error("reply failed", "conversation", m.Conversation, "error", err)
 	}
 }
 
@@ -92,5 +95,5 @@ func attrs(m Message) []any {
 	for _, block := range m.Content {
 		types = append(types, block.Type)
 	}
-	return []any{"contact", m.Contact, "blocks", types, "text", TextOf(m.Content)}
+	return []any{"conversation", m.Conversation, "blocks", types, "text", TextOf(m.Content)}
 }
