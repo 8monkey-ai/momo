@@ -107,3 +107,30 @@ func TestMissingFileIsReported(t *testing.T) {
 		t.Fatal("Load succeeded, want an error")
 	}
 }
+
+func TestAgentBlockDecodesIntoTheAgentsOwnSettings(t *testing.T) {
+	cfg := load(t, "agent:\n  command: [\"claude-code-acp\"]\n  data_dir: \"/var/lib/momo\"\n")
+	var s struct {
+		Command []string `yaml:"command"`
+		DataDir string   `yaml:"data_dir"`
+	}
+	if err := cfg.Agent(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(s.Command) != 1 || s.Command[0] != "claude-code-acp" {
+		t.Errorf("command = %v, want [claude-code-acp]", s.Command)
+	}
+	if s.DataDir != "/var/lib/momo" {
+		t.Errorf("data_dir = %q, want \"/var/lib/momo\"", s.DataDir)
+	}
+}
+
+func TestMisspelledAgentSettingIsReported(t *testing.T) {
+	cfg := load(t, "agent:\n  data_directory: \"/var/lib/momo\"\n")
+	var s struct {
+		DataDir string `yaml:"data_dir"`
+	}
+	if err := cfg.Agent(&s); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}

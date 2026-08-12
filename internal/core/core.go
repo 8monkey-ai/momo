@@ -57,31 +57,72 @@ type Message struct {
 // from any goroutine.
 type Reply func(ctx context.Context, content []ContentBlock) error
 
+// Agent runs one turn of one conversation: the incoming message goes in, the
+// complete reply comes out. The implementation lives outside core, so core knows
+// neither ACP nor that a subprocess exists.
+type Agent interface {
+	Turn(ctx context.Context, conversation string, prompt []ContentBlock) ([]ContentBlock, error)
+}
+
 // Handler is what a channel delivers messages to. The two directions are
 // separate methods because each is an occasion for a different action, and only
-// the incoming one has something to answer.
+// the incoming one has something to answer. Received reports a turn it could not
+// complete, so the channel that received the message can tell the sender in the
+// way that channel has.
 type Handler interface {
-	Received(ctx context.Context, m Message, reply Reply)
+	Received(ctx context.Context, m Message, reply Reply) error
 	Sent(ctx context.Context, m Message)
 }
 
-// EchoHandler answers every incoming message with the content it carried.
-//
-// ponytail: this is the proof that the reply path works end to end, nothing
-// more; the agent harness replaces it.
-type EchoHandler struct {
-	Log *slog.Logger
+// AgentHandler answers every incoming message with one turn of the agent.
+type AgentHandler struct {
+	Agent Agent
+	Log   *slog.Logger
 }
 
-func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
+// Received runs one turn and sends the complete reply once, before the turn is
+// reported complete.
+func (h AgentHandler) Received(ctx context.Context, m Message, reply Reply) error {
 	h.Log.Info("message received", attrs(m)...)
-	if err := reply(ctx, m.Content); err != nil {
-		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+	content, err := h.Agent.Turn(ctx, m.Contact, m.Content)
+	if err != nil {
+		h.Log.Error("turn failed", "contact", m.Contact, "error", err)
+		return err
 	}
+	if err := reply(ctx, content); err != nil {
+		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+		return err
+	}
+	return nil
 }
 
-func (h EchoHandler) Sent(_ context.Context, m Message) {
+func (h AgentHandler) Sent(_ context.Context, m Message) {
 	h.Log.Info("message sent", attrs(m)...)
+}
+
+// Qualify names every message a channel delivers with the channel it arrived on,
+// as {channel}:{contact}. Two channels can issue the same contact id, so the
+// channel name is what makes a conversation identity unique. Every handler is
+// wrapped with it where the channels are built, so no channel can forget it or
+// state it wrongly.
+func Qualify(channel string, h Handler) Handler {
+	return qualified{channel: channel, handler: h}
+}
+
+type qualified struct {
+	channel string
+	handler Handler
+}
+
+func (q qualified) Received(ctx context.Context, m Message, reply Reply) error {
+	return q.handler.Received(ctx, q.name(m), reply)
+}
+
+func (q qualified) Sent(ctx context.Context, m Message) { q.handler.Sent(ctx, q.name(m)) }
+
+func (q qualified) name(m Message) Message {
+	m.Contact = q.channel + ":" + m.Contact
+	return m
 }
 
 // attrs reports a message's block types and its text, and never the base64 data

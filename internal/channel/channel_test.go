@@ -59,3 +59,34 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
 }
+
+type contacts struct {
+	seen chan string
+}
+
+func (c contacts) Received(_ context.Context, m core.Message, _ core.Reply) error {
+	c.seen <- m.Contact
+	return nil
+}
+
+func (c contacts) Sent(context.Context, core.Message) {}
+
+func TestBuildQualifiesEveryMessageWithTheChannelName(t *testing.T) {
+	isolateFactories(t)
+	var handed core.Handler
+	Register("stub-a", func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		handed = h
+		return fixed{}, nil
+	})
+	seen := contacts{seen: make(chan string, 1)}
+
+	if _, err := Build(context.Background(), map[string]Decoder{"stub-a": noSettings}, seen); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := handed.Received(context.Background(), core.Message{Contact: "12345"}, nil); err != nil {
+		t.Fatalf("Received: %v", err)
+	}
+	if got := <-seen.seen; got != "stub-a:12345" {
+		t.Fatalf("contact = %q, want %q", got, "stub-a:12345")
+	}
+}

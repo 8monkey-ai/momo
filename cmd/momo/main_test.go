@@ -17,6 +17,7 @@ import (
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 type fixed struct {
@@ -40,6 +41,38 @@ func marker(body string) http.Handler {
 }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// silent stands for the handler momo assembles around the agent: the tests of
+// the HTTP surface do not run a turn.
+type silent struct{}
+
+func (silent) Received(context.Context, core.Message, core.Reply) error { return nil }
+func (silent) Sent(context.Context, core.Message)                       {}
+
+func TestHandlerRefusesAnAgentBlockThatCannotRunATurn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "no agent block", body: "listen: \"127.0.0.1:0\"\n"},
+		{name: "no command", body: "agent:\n  data_dir: \"" + t.TempDir() + "\"\n"},
+		{name: "no data directory", body: "agent:\n  command: [\"/bin/true\"]\n"},
+		{name: "unusable turn timeout", body: "agent:\n  command: [\"/bin/true\"]\n  data_dir: \"" + t.TempDir() + "\"\n  turn_timeout: \"0s\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := handler(loadConfig(t, tc.body), discard()); err == nil {
+				t.Fatal("handler succeeded, want an error naming the unusable setting")
+			}
+		})
+	}
+}
+
+func TestHandlerBuildsTheAgentFromItsOwnBlock(t *testing.T) {
+	cfg := loadConfig(t, "agent:\n  command: [\"/bin/true\"]\n  data_dir: \""+t.TempDir()+"\"\n")
+	if _, err := handler(cfg, discard()); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+}
 
 func body(t *testing.T, mux *http.ServeMux, path string) string {
 	t.Helper()
@@ -117,7 +150,7 @@ func TestShutdownDoesNotWaitForAnOpenStream(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
-	go func() { stopped <- serve(ctx, discard(), cfg, l) }()
+	go func() { stopped <- serve(ctx, discard(), cfg, l, silent{}) }()
 
 	endpoint := "http://" + l.Addr().String() + "/v1/acp"
 	connID := initialize(t, endpoint)
@@ -223,7 +256,7 @@ func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go func() { _ = serve(ctx, discard(), cfg, l) }()
+	go func() { _ = serve(ctx, discard(), cfg, l, silent{}) }()
 
 	endpoint := "http://" + l.Addr().String() + "/v1/acp"
 	connID := initialize(t, endpoint)

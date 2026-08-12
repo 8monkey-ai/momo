@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/netutil"
 
+	"github.com/8monkey-ai/momo/internal/agent"
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -40,13 +41,29 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The agent is built before the listener: an unusable agent block stops the
+	// process before it serves.
+	h, err := handler(cfg, log)
+	if err != nil {
+		return err
+	}
 	l, err := listen(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return serve(ctx, log, cfg, l)
+	return serve(ctx, log, cfg, l, h)
+}
+
+// handler builds the agent from its own block of the configuration and the
+// handler that answers every incoming message with one turn of it.
+func handler(cfg *config.Config, log *slog.Logger) (core.Handler, error) {
+	a, err := agent.New(cfg.Agent, log)
+	if err != nil {
+		return nil, err
+	}
+	return core.AgentHandler{Agent: a, Log: log}, nil
 }
 
 // listen enforces the configured maximum on accept, before a request exists: an
@@ -99,11 +116,11 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
-func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.Listener) error {
+func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.Listener, h core.Handler) error {
 	lifetime, release := context.WithCancel(context.Background())
 	defer release()
 
-	instances, err := channel.Build(lifetime, cfg.Channels, core.EchoHandler{Log: log})
+	instances, err := channel.Build(lifetime, cfg.Channels, h)
 	if err != nil {
 		return err
 	}

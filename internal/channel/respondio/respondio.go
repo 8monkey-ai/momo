@@ -33,6 +33,12 @@ const (
 	eventSent     = "message.sent"
 
 	textMessage = "text"
+
+	// failureNotice is what a contact reads when a turn fails. A person in a chat
+	// has no channel for an error, and silence looks the same as a momo that is out
+	// of service. The text is momo's own and carries no diagnostic detail; the cause
+	// is in the log.
+	failureNotice = "Sorry, I cannot answer your message now. Please send it again later."
 )
 
 type settings struct {
@@ -134,7 +140,12 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
-		h.core.Received(ctx, m, h.client.reply(contactID))
+		reply := h.client.reply(contactID)
+		if err := h.core.Received(ctx, m, reply); err != nil {
+			// The contact is told that the turn failed. Nothing more can be done if
+			// this message cannot be sent either.
+			_ = reply(ctx, core.Text(failureNotice))
+		}
 	case eventSent:
 		// An outgoing message is momo's own reply as often as an operator's; nothing
 		// answers it.

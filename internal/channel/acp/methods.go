@@ -9,84 +9,30 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
+	acpv1 "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
-)
-
-const (
-	// momo supports protocol version 1 only, so negotiation always answers 1:
-	// answering another version later is a change to this one place.
-	protocolVersion = 1
-
-	methodInitialize = "initialize"
-	methodNewSession = "session/new"
-	methodPrompt     = "session/prompt"
-	methodCancel     = "session/cancel"
-	// methodUpdate is momo's only agent-to-client message: the reply to a prompt.
-	methodUpdate = "session/update"
 )
 
 // sessionScoped reports whether a method acts on one session and therefore needs
 // the session header.
 func sessionScoped(method string) bool {
-	return method == methodPrompt || method == methodCancel
+	return method == acpv1.MethodPrompt || method == acpv1.MethodCancel
 }
 
 // streamOf names the stream a method's response goes on: session/new is answered
 // on the connection-scoped stream because the client has no session id yet.
 func streamOf(method, sessionID string) string {
-	if method == methodNewSession {
+	if method == acpv1.MethodNewSession {
 		return ""
 	}
 	return sessionID
 }
 
+// initializeResult adds the connection id the streamable HTTP transport needs to
+// the shared result: the id belongs to this transport and to no other role.
 type initializeResult struct {
-	ProtocolVersion   int               `json:"protocolVersion"`
-	AgentCapabilities agentCapabilities `json:"agentCapabilities"`
-	AgentInfo         agentInfo         `json:"agentInfo"`
-	ConnectionID      string            `json:"connectionId"`
-}
-
-// agentCapabilities omits authMethods and every other capability momo does not
-// have: v1 reads an omitted capability as unsupported.
-type agentCapabilities struct {
-	PromptCapabilities promptCapabilities `json:"promptCapabilities"`
-}
-
-// promptCapabilities is accurate because momo carries every block type to the
-// core unchanged rather than reading it.
-type promptCapabilities struct {
-	Image           bool `json:"image"`
-	Audio           bool `json:"audio"`
-	EmbeddedContext bool `json:"embeddedContext"`
-}
-
-type agentInfo struct {
-	Name string `json:"name"`
-}
-
-type newSessionResult struct {
-	SessionID string `json:"sessionId"`
-}
-
-type promptParams struct {
-	Prompt []core.ContentBlock `json:"prompt"`
-}
-
-type promptResult struct {
-	StopReason string `json:"stopReason"`
-}
-
-// updateParams is a session/update notification's params: one content block of
-// the agent's message, in ACP v1's shape.
-type updateParams struct {
-	SessionID string `json:"sessionId"`
-	Update    update `json:"update"`
-}
-
-type update struct {
-	SessionUpdate string            `json:"sessionUpdate"`
-	Content       core.ContentBlock `json:"content"`
+	acpv1.InitializeResult
+	ConnectionID string `json:"connectionId"`
 }
 
 func (e *endpoint) initialize(w http.ResponseWriter, req *jsonrpc2.Request) {
@@ -94,14 +40,21 @@ func (e *endpoint) initialize(w http.ResponseWriter, req *jsonrpc2.Request) {
 	w.Header().Set(connectionHeader, connID)
 	w.Header().Set("Content-Type", "application/json")
 	resp := result(req.ID, initializeResult{
-		ProtocolVersion: protocolVersion,
-		AgentInfo:       agentInfo{Name: "momo"},
-		ConnectionID:    connID,
-		AgentCapabilities: agentCapabilities{PromptCapabilities: promptCapabilities{
-			Image:           true,
-			Audio:           true,
-			EmbeddedContext: true,
-		}},
+		ConnectionID: connID,
+		InitializeResult: acpv1.InitializeResult{
+			ProtocolVersion: acpv1.ProtocolVersion,
+			AgentInfo:       &acpv1.Implementation{Name: "momo"},
+			// momo advertises the prompt content it carries to the core
+			// unchanged, and no session capability: it neither lists nor
+			// resumes a session.
+			AgentCapabilities: acpv1.AgentCapabilities{
+				PromptCapabilities: acpv1.PromptCapabilities{
+					Image:           true,
+					Audio:           true,
+					EmbeddedContext: true,
+				},
+			},
+		},
 	})
 	// Nothing can be done if the client hung up mid-response.
 	_ = json.NewEncoder(w).Encode(resp)
@@ -109,11 +62,11 @@ func (e *endpoint) initialize(w http.ResponseWriter, req *jsonrpc2.Request) {
 
 func (e *endpoint) answer(ctx context.Context, req *jsonrpc2.Request, connID, sessionID string) *jsonrpc2.Response {
 	switch req.Method {
-	case methodNewSession:
+	case acpv1.MethodNewSession:
 		return e.newSession(req, connID)
-	case methodPrompt:
+	case acpv1.MethodPrompt:
 		return e.prompt(ctx, req, connID, sessionID)
-	case methodCancel:
+	case acpv1.MethodCancel:
 		// Nothing is running to cancel: session/prompt completes before it is
 		// answered. As a notification it is not answered at all.
 		if req.Notif {
@@ -133,11 +86,11 @@ func (e *endpoint) newSession(req *jsonrpc2.Request, connID string) *jsonrpc2.Re
 	if !known {
 		return errorResponse(req.ID, jsonrpc2.CodeInternalError, "the connection was released")
 	}
-	return result(req.ID, newSessionResult{SessionID: sessionID})
+	return result(req.ID, acpv1.NewSessionResult{SessionID: sessionID})
 }
 
 func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, sessionID string) *jsonrpc2.Response {
-	var p promptParams
+	var p acpv1.PromptParams
 	if err := params(req, &p); err != nil {
 		return errorResponse(req.ID, jsonrpc2.CodeInvalidParams, err.Error())
 	}
@@ -152,8 +105,13 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, se
 	// The client's prompt is the contact speaking, and momo issues the session
 	// id, so the session is the contact. Received returns once the reply has been
 	// emitted, so the turn is answered after its content, as v1 requires.
-	e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt}, e.reply(connID, sessionID))
-	return result(req.ID, promptResult{StopReason: "end_turn"})
+	if err := e.core.Received(ctx, core.Message{Contact: sessionID, Content: p.Prompt}, e.reply(connID, sessionID)); err != nil {
+		// None of v1's five stop reasons states that the turn failed, so a failed
+		// turn travels as a JSON-RPC error. The code is internal error: the request
+		// was well formed and momo is the side that could not answer it.
+		return errorResponse(req.ID, jsonrpc2.CodeInternalError, "the turn failed: "+err.Error())
+	}
+	return result(req.ID, acpv1.PromptResult{StopReason: acpv1.StopReasonEndTurn})
 }
 
 // reply emits the blocks as session/update notifications on the stream of the
@@ -162,10 +120,10 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, se
 func (e *endpoint) reply(connID, sessionID string) core.Reply {
 	return func(_ context.Context, content []core.ContentBlock) error {
 		for _, block := range content {
-			notif := &jsonrpc2.Request{Method: methodUpdate, Notif: true}
-			if err := notif.SetParams(updateParams{
+			notif := &jsonrpc2.Request{Method: acpv1.MethodUpdate, Notif: true}
+			if err := notif.SetParams(acpv1.SessionNotification{
 				SessionID: sessionID,
-				Update:    update{SessionUpdate: "agent_message_chunk", Content: block},
+				Update:    acpv1.SessionUpdate{SessionUpdate: acpv1.AgentMessageChunk, Content: block},
 			}); err != nil {
 				return err
 			}

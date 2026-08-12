@@ -53,7 +53,9 @@ type Instance struct {
 	Channel Channel
 }
 
-// Build builds every configured channel, in a stable order.
+// Build builds every configured channel, in a stable order. Every channel's
+// handler is qualified with the name the channel was configured under, so the
+// conversation identity is settled here and not in a channel.
 func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
@@ -61,7 +63,7 @@ func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler)
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], h)
+		c, err := f(lifetime, configs[name], core.Qualify(name, h))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

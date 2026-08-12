@@ -3,7 +3,6 @@ package respondio
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -134,6 +133,16 @@ func TestReplyReportsARefusal(t *testing.T) {
 	}
 }
 
+// echo answers every incoming message with the content it carried, so the
+// outbound path is exercised without an agent.
+type echo struct{}
+
+func (echo) Received(ctx context.Context, m core.Message, reply core.Reply) error {
+	return reply(ctx, m.Content)
+}
+
+func (echo) Sent(context.Context, core.Message) {}
+
 func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -146,11 +155,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAPI(t)
-			h := &webhook{
-				secret: secret,
-				core:   core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))},
-				client: a.client(),
-			}
+			h := &webhook{secret: secret, core: echo{}, client: a.client()}
 			body := payload(tc.event)
 			post(t, h, body, sign(body, secret))
 			if !tc.answers {
@@ -168,11 +173,10 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 
 func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	a := newAPI(t)
-	log := core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for _, id := range []string{"111", "222"} {
 		body := `{"event_type":"message.received","contact":{"id":` + id + `},` +
 			`"message":{"message":{"type":"text","text":"hi"}}}`
-		go post(t, &webhook{secret: secret, core: log, client: a.client()}, body, sign(body, secret))
+		go post(t, &webhook{secret: secret, core: echo{}, client: a.client()}, body, sign(body, secret))
 	}
 	paths := map[string]bool{a.next(t).path: true}
 	paths[a.next(t).path] = true

@@ -49,9 +49,6 @@ To stop or restart momo, send it `SIGTERM` (or `Ctrl-C`). It stops accepting new
 finishes the ones already in progress, and then exits, so a restart or redeploy does not
 cut off a webhook delivery already under way.
 
-*(WIP)* Handling that outlives the response is drained as well, so no message momo has
-already acknowledged is lost to a restart. It lands with the agent harness.
-
 ### Health
 
 `GET /healthz` answers `200 ok` while momo is running. Point your uptime monitor at it.
@@ -78,6 +75,16 @@ idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
 
+agent:
+  # Command momo runs to start the agent harness, as an argument list. Required.
+  command: ["claude-code-acp"]
+  # Directory momo keeps the conversations in, one subdirectory per
+  # conversation. momo creates it if it is missing. Required.
+  data_dir: "/var/lib/momo"
+  # How long one turn may take, from the message arriving to the reply. A turn
+  # that reaches this limit fails. Must be positive. Default: "30m"
+  turn_timeout: "30m"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -103,11 +110,16 @@ channels:
     connection_grace: "5m"
 ```
 
-Each channel requires only its credentials: the two signing keys and the API token for
-respond.io, the token for ACP. Every other setting has a default, so the shortest working
-file for respond.io alone is:
+The `agent` block is required: momo needs a harness to answer with. Each channel requires
+only its credentials: the two signing keys and the API token for respond.io, the token for
+ACP. Every other setting has a default, so the shortest working file for respond.io alone
+is:
 
 ```yaml
+agent:
+  command: ["claude-code-acp"]
+  data_dir: "/var/lib/momo"
+
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
@@ -140,7 +152,7 @@ it as `message.received`
 - URL: `https://your-domain.example/respondio/received`
 
 **2. Outgoing messages** — labelled *New Outgoing Message* and sent as `message.sent`;
-these are replies from the workspace, whether by a human operator or, later, by an agent
+these are replies from the workspace, whether from a human operator or from momo itself
 
 - URL: `https://your-domain.example/respondio/sent`
 
@@ -194,7 +206,9 @@ The client connects like this:
 
 momo answers a prompt on the session's own stream: one `session/update` notification per
 content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
-response with `stopReason: "end_turn"`, always after the content it is ending.
+response with `stopReason: "end_turn"`, always after the content it is ending. A turn that
+fails is answered with a JSON-RPC error on that request instead, because no stop reason
+states that a turn failed.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
@@ -210,6 +224,39 @@ clients have to initialize again.
 
 ## Connect an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo echoes every message it receives
-back on the channel it came from.
+momo answers every message with one turn of an agent harness. A harness is a program that
+speaks [ACP](https://agentclientprotocol.com) on its standard input and output, such as
+`claude-code-acp`. Put the command in the `agent` block, together with the directory momo
+keeps the conversations in.
+
+For each message momo:
+
+1. starts the harness as a subprocess in the directory of that conversation
+2. asks the harness for the session it holds in that directory, and resumes it; if there is
+   none, momo asks for a new session
+3. sends the message as the prompt, and collects the complete reply
+4. sends the reply as one message on the channel the message arrived on
+5. stops the harness
+
+A conversation is named `{channel}:{contact}`: the name of the channel in the configuration
+file, and the contact id that channel gave the message. Two channels can name the same
+contact id, and the channel name keeps the two conversations apart. Each conversation has
+its own directory under `data_dir`.
+
+momo stores nothing of a conversation. The harness owns the session and keeps it in the
+directory momo gives it, so the next message of that conversation continues where the last
+one stopped. What a harness needs in that directory is a matter between the harness and the
+operator; momo creates the directory and leaves it empty.
+
+momo runs one turn at a time for each conversation. A message that arrives while a turn is
+running waits for that turn, and a message of another conversation does not wait. A turn
+that takes longer than `turn_timeout` fails, and momo stops the harness.
+
+The standard error output of the harness goes to momo's log, one record per line. It is the
+diagnostic output of a failing harness. Message content is never logged.
+
+A turn can fail: the harness does not start, it stops during the turn, it refuses the prompt,
+or it reaches `turn_timeout`. momo logs the cause and tells the sender in the way the channel
+has. A respond.io contact reads one short message from momo, `Sorry, I cannot answer your
+message now. Please send it again later.`, and no detail of the failure. An ACP client gets a
+JSON-RPC error on its `session/prompt` request. momo does not try the turn again.

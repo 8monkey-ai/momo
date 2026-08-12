@@ -14,8 +14,8 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 )
 
-// Config is the configuration momo runs with. Channel blocks stay undecoded so
-// that each channel owns its own settings.
+// Config is the configuration momo runs with. The channel blocks and the agent
+// block stay undecoded so that each of them owns its own settings.
 type Config struct {
 	Listen            string
 	MaxConnections    int
@@ -24,6 +24,7 @@ type Config struct {
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
 	Channels          map[string]channel.Decoder
+	Agent             channel.Decoder
 }
 
 type file struct {
@@ -34,6 +35,7 @@ type file struct {
 	IdleTimeout       *time.Duration       `yaml:"idle_timeout"`
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
+	Agent             yaml.Node            `yaml:"agent"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -70,6 +72,7 @@ func parse(raw []byte) (*Config, error) {
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
 		Channels:        map[string]channel.Decoder{},
+		Agent:           decoderFor(f.Agent),
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":8080"
