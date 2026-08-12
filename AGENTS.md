@@ -1,5 +1,5 @@
 ## Communication
-- Write in ASD-STE100 Simplified Technical English: one instruction per sentence, active voice, present tense, approved words in their approved meaning, and no more than 20 words in a procedural sentence. This applies to everything you write: replies, documents, code comments, and commit messages.
+- Always talk in ASD-STE100 Simplified Technical English. Applies to documentation and comments as well.
 
 ## Design
 Apply to every non-trivial change. These constrain design, not formatting.
