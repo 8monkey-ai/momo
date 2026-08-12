@@ -242,9 +242,10 @@ One message is one turn:
 6. momo interrupts the agent, waits up to five seconds for it to store its session, and
    then stops it.
 
-One turn runs at a time for each conversation. A second message for the same contact waits
-for the turn in progress, and a message for another contact does not wait. A turn that
-reaches `turn_timeout` fails, and the subprocess is stopped.
+One turn runs at a time for each conversation, and one conversation is one contact on one
+channel. A second message for that conversation waits for the turn in progress. A message
+for another conversation does not wait, and the same contact id on two channels is two
+conversations. A turn that reaches `turn_timeout` fails, and the subprocess is stopped.
 
 Each conversation gets one directory under `data_dir`, named after the channel and the
 contact. momo creates it empty, and the agent owns everything in it. momo keeps no storage

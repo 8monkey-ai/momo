@@ -180,7 +180,8 @@ func (p pipes) Close() error {
 
 // diagnostics puts the stderr of the agent and the complaints of the JSON-RPC
 // connection in momo's log. It is the only diagnostic output a failing harness
-// has, and it carries no message content.
+// has. momo writes no message content of its own here; what the agent writes to
+// its stderr is the agent's decision.
 type diagnostics struct{ log *slog.Logger }
 
 func (d diagnostics) Write(b []byte) (int, error) {

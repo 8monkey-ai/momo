@@ -92,7 +92,9 @@ func (h *Harness) Turn(ctx context.Context, m core.Message) ([]core.ContentBlock
 // acquire holds the conversation for one turn. Each conversation has a channel of
 // capacity one, so turns of different conversations never wait for each other.
 //
-// ponytail: PR 5's actor for each contact, with a FIFO inbox, replaces this lock.
+// ponytail: the map keeps one entry for each conversation it has ever seen, so it
+// grows with the contact base. PR 5's actor for each contact, with a FIFO inbox,
+// replaces this lock and its map.
 func (h *Harness) acquire(ctx context.Context, conversation string) (func(), error) {
 	h.mu.Lock()
 	turn, known := h.turns[conversation]
