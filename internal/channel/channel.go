@@ -53,7 +53,9 @@ type Instance struct {
 	Channel Channel
 }
 
-// Build builds every configured channel, in a stable order.
+// Build builds every configured channel, in a stable order. Each channel gets
+// the handler behind a wrapper that qualifies a message with the channel's own
+// name, so no channel can forget to name itself or name itself incorrectly.
 func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
@@ -61,11 +63,24 @@ func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler)
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], h)
+		c, err := f(lifetime, configs[name], qualifying{name: name, handler: h})
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
 		instances = append(instances, Instance{Name: name, Channel: c})
 	}
 	return instances, nil
+}
+
+type qualifying struct {
+	name    string
+	handler core.Handler
+}
+
+func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Reply) error {
+	return q.handler.Received(ctx, core.Qualify(q.name, m), reply)
+}
+
+func (q qualifying) Sent(ctx context.Context, m core.Message) {
+	q.handler.Sent(ctx, core.Qualify(q.name, m))
 }
