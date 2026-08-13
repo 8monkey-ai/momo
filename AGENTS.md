@@ -39,6 +39,24 @@ Apply to every non-trivial change. These constrain design, not formatting.
 - Modules expose only what callers need. Representation, IO details, and invariant enforcement stay hidden.
 - Do not create import cycles.
 
+## Scope of a Change
+Before the first edit of a requested activity, judge its scope. A request to implement never
+means one pull request, and no document or plan relaxes this.
+
+Divide the work when it holds more than one decision a reviewer could accept or refuse on
+its own, more than one mechanism the codebase does not use yet, or more than one stage that
+leaves a product that works. A change that one `<type>(<scope>): <description>` line cannot
+describe without "and" is more than one pull request.
+
+Write the division to a file as an ordered list of pull requests. Each one compiles, passes
+the checks, carries its own tests, and leaves the product in a state that works. State for
+each one what it adds and what it does not. Then implement the first pull request, and report
+what the later ones hold.
+
+If the work grows past one pull request while in progress, stop there. Divide what is left,
+finish the first pull request only, and report the rest. Do not carry an oversized change to
+the end.
+
 ## Structure
 - Treat the current file and directory layout as a proposal, not a given. When a change makes the existing structure awkward, say so and propose a better one instead of forcing the change into the wrong place.
 - Do not reorganize the project without approval. Suggest the move, name what it improves, and wait.
