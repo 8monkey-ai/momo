@@ -29,18 +29,26 @@ func (c *client) reply(contactID string) core.Reply {
 		if text == "" {
 			return nil
 		}
-		return c.send(ctx, contactID, text)
+		return c.post(ctx, contactID, "message", map[string]any{
+			"message": map[string]string{"type": textMessage, "text": text},
+		})
 	}
 }
 
-func (c *client) send(ctx context.Context, contactID, text string) error {
-	body, err := json.Marshal(map[string]any{
-		"message": map[string]string{"type": textMessage, "text": text},
-	})
+// comment writes on the conversation what only the workspace sees. A failed turn
+// produced no reply, and a message would be a reply from the business, so the
+// operator who watches the conversation learns of it and the contact sees the
+// true state, which is no answer.
+func (c *client) comment(ctx context.Context, contactID, text string) error {
+	return c.post(ctx, contactID, "comment", map[string]any{"text": text})
+}
+
+func (c *client) post(ctx context.Context, contactID, resource string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/contact/id:%s/message", c.url, contactID)
+	url := fmt.Sprintf("%s/contact/id:%s/%s", c.url, contactID, resource)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -49,14 +57,14 @@ func (c *client) send(ctx context.Context, contactID, text string) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("respond.io: sending to contact %s: %w", contactID, err)
+		return fmt.Errorf("respond.io: %s for contact %s: %w", resource, contactID, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		// The body explains the refusal; the bound keeps an HTML error page out of
 		// the log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("respond.io: sending to contact %s: status %d: %s", contactID, resp.StatusCode, detail)
+		return fmt.Errorf("respond.io: %s for contact %s: status %d: %s", resource, contactID, resp.StatusCode, detail)
 	}
 	return nil
 }

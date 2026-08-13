@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -134,11 +135,24 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
-		h.core.Received(ctx, m, h.client.reply(contactID))
+		if err := h.core.Received(ctx, m, h.client.reply(contactID)); err != nil {
+			h.report(ctx, contactID)
+		}
 	case eventSent:
 		// An outgoing message is momo's own reply as often as an operator's; nothing
 		// answers it.
 		h.core.Sent(ctx, m)
+	}
+}
+
+// report tells the workspace that momo did not answer. The text belongs to momo,
+// and the cause is in the momo log. A comment that cannot be posted is logged
+// and nothing more: it must not fail the turn a second time, and it must not
+// become a message to the contact.
+func (h *webhook) report(ctx context.Context, contactID string) {
+	const text = "momo did not answer this message: the agent harness failed."
+	if err := h.client.comment(ctx, contactID, text); err != nil {
+		slog.Error("the failure comment was not posted", "contact", contactID, "error", err)
 	}
 }
 

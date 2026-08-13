@@ -50,7 +50,7 @@ finishes the ones already in progress, and then exits, so a restart or redeploy 
 cut off a webhook delivery already under way.
 
 *(WIP)* Handling that outlives the response is drained as well, so no message momo has
-already acknowledged is lost to a restart. It lands with the agent harness.
+already acknowledged is lost to a restart.
 
 ### Health
 
@@ -78,6 +78,17 @@ idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
 
+# The agent momo answers messages with. Required.
+agent:
+  # Command that starts the agent harness, as a program and its arguments. momo
+  # speaks ACP to it over its stdin and stdout. Required.
+  command: ["my-agent", "acp"]
+  # Directory momo gives each conversation a working directory under. Required.
+  data_dir: "/var/lib/momo/conversations"
+  # How long one turn may take, from the moment the message arrives to the reply.
+  # Default: "30m"
+  turn_timeout: "30m"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -103,11 +114,16 @@ channels:
     connection_grace: "5m"
 ```
 
-Each channel requires only its credentials: the two signing keys and the API token for
-respond.io, the token for ACP. Every other setting has a default, so the shortest working
-file for respond.io alone is:
+The `agent` block is required: momo answers a message with an agent turn and has nothing
+else to answer with. Each channel requires only its credentials: the two signing keys and
+the API token for respond.io, the token for ACP. Every other setting has a default, so the
+shortest working file for respond.io alone is:
 
 ```yaml
+agent:
+  command: ["my-agent", "acp"]
+  data_dir: "/var/lib/momo/conversations"
+
 channels:
   respondio:
     received_secret: "paste the message.received signing key"
@@ -210,6 +226,40 @@ clients have to initialize again.
 
 ## Connect an agent
 
-*(WIP)* The agent harness — running an [ACP](https://agentclientprotocol.com) agent per
-contact — lands in a follow-up release. Until then, momo echoes every message it receives
-back on the channel it came from.
+momo answers a message with one turn of an [ACP](https://agentclientprotocol.com) agent.
+Any program that speaks ACP version 1 over its stdin and stdout works, and `command` is
+what starts it. momo is the client in that role, and the program is the agent.
+
+One message is one turn:
+
+1. momo starts the program in the conversation's own working directory, under `data_dir`.
+   The name of the directory comes from the channel and the contact, so a contact of one
+   channel never shares a directory with the same contact id on another channel.
+2. momo sends `initialize` and reads the capabilities the agent advertises.
+3. If the agent advertises session listing and `session/resume`, momo lists the sessions of
+   that directory and resumes the first one. Otherwise, and if there is none, momo creates a
+   session with `session/new`.
+4. momo sends the message as `session/prompt`, collects the `agent_message_chunk` updates of
+   the turn, and sends them as one reply on the channel the message arrived on.
+5. momo signals the program and waits for it to exit, so it stores its session first.
+
+The agent owns all storage. momo keeps no session id and no history, which is why listing is
+what makes a session findable: an agent that resumes but does not list gets a new session
+every turn, and every turn starts without memory of the last one.
+
+momo advertises no filesystem and no terminal capability, and answers a request for one with
+`method not found`. The agent works in its own working directory with its own access. A
+permission request is approved automatically: momo selects an option the agent offered that
+allows the operation, and cancels only when the agent offers none.
+
+Everything the program writes to its stderr goes to the momo log. It is the only diagnostic
+output a failing harness has.
+
+One conversation runs one turn at a time. A message that arrives while a turn is running
+waits, and turns of other conversations are not affected. A turn that reaches
+`turn_timeout` fails, momo stops the program, and the conversation is free again.
+
+A turn that fails produces no reply, and the channel that received the message reports it:
+an ACP client receives a JSON-RPC error on its `session/prompt`, and a respond.io
+conversation gets an internal comment. The contact receives nothing, because there is no
+answer to send. The cause is in the momo log.

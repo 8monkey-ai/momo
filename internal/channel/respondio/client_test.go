@@ -3,7 +3,6 @@ package respondio
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -134,21 +133,31 @@ func TestReplyReportsARefusal(t *testing.T) {
 	}
 }
 
-func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
+// echo answers a message with the content it carried, so a test sees the reply
+// path without an agent.
+type echo struct{}
+
+func (echo) Received(ctx context.Context, m core.Message, reply core.Reply) error {
+	return reply(ctx, m.Content)
+}
+
+func (echo) Sent(context.Context, core.Message) {}
+
+func TestAnIncomingMessageIsAnsweredOnlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		event   string
 		answers bool
 	}{
 		{name: "incoming message is answered", event: eventReceived, answers: true},
-		// Echoing an outgoing message would answer momo's own reply.
+		// An outgoing message is momo's own reply as often as an operator's.
 		{name: "outgoing message is not", event: eventSent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAPI(t)
 			h := &webhook{
 				secret: secret,
-				core:   core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+				core:   echo{},
 				client: a.client(),
 			}
 			body := payload(tc.event)
@@ -168,7 +177,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 
 func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	a := newAPI(t)
-	log := core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	log := echo{}
 	for _, id := range []string{"111", "222"} {
 		body := `{"event_type":"message.received","contact":{"id":` + id + `},` +
 			`"message":{"message":{"type":"text","text":"hi"}}}`

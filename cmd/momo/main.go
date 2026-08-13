@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/netutil"
 
+	"github.com/8monkey-ai/momo/internal/agent"
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -26,6 +27,9 @@ const healthPath = "/healthz"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Channels report a failure the operator has to see; the log they report it to
+	// is the one momo runs with.
+	slog.SetDefault(log)
 	if err := run(log); err != nil {
 		log.Error("momo stopped", "error", err)
 		os.Exit(1)
@@ -103,7 +107,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	lifetime, release := context.WithCancel(context.Background())
 	defer release()
 
-	instances, err := channel.Build(lifetime, cfg.Channels, core.EchoHandler{Log: log})
+	a, err := agent.New(cfg.Agent, log)
+	if err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.Turn{Agent: a, Log: log})
 	if err != nil {
 		return err
 	}

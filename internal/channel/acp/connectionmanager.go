@@ -91,10 +91,6 @@ func (m *connectionManager) newSession(connID string) (string, bool) {
 	if !known {
 		return "", false
 	}
-	// ponytail: momo's session id is the only one in play today. Once the agent
-	// harness lands the upstream agent issues one of its own and the two have to
-	// be mapped, because the id momo hands the client must stay stable across
-	// whatever the upstream does.
 	id := newID()
 	c.sessions[id] = nil
 	return id, true
