@@ -5,8 +5,10 @@
 // It writes the wire by hand, from the specification, so a mistake in momo's own
 // ACP vocabulary shows up as a failing test. STUB_BEHAVIOUR selects what the stub
 // shows: an empty value is the full flow, "no-sessions" advertises neither
-// listing nor resumption, "permission" asks before it answers, "fail" answers the
-// prompt with an error, and "hang" never answers.
+// listing nor resumption, "permission" asks before it answers, "filesystem" asks
+// momo to read a file and reports the refusal, "other-cwd" lists its session
+// under a directory it was not asked for, "fail" answers the prompt with an
+// error, and "hang" never answers.
 package main
 
 import (
@@ -15,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -121,6 +124,9 @@ func (s *stub) list(req request) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
+		}
+		if s.behaviour == "other-cwd" {
+			cwd = filepath.Join(cwd, "another-conversation")
 		}
 		sessions = append(sessions, map[string]any{"sessionId": stored.SessionID, "cwd": cwd})
 	}

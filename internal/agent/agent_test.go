@@ -122,6 +122,15 @@ func TestAHarnessWithoutListingGetsANewSessionEveryTurn(t *testing.T) {
 	}
 }
 
+func TestASessionListedForAnotherDirectoryIsNotResumed(t *testing.T) {
+	a := newAgent(t, "other-cwd", time.Minute)
+
+	turn(t, a, "respondio:12345", "one")
+	if second := turn(t, a, "respondio:12345", "two"); second != "turn 1: two" {
+		t.Fatalf("second reply = %q, want a first turn in a new session", second)
+	}
+}
+
 func TestAPermissionRequestIsApprovedFromTheOptionsTheHarnessSupplied(t *testing.T) {
 	a := newAgent(t, "permission", time.Minute)
 
@@ -230,6 +239,20 @@ func TestTheConversationDirectoryIsSafeAndEmpty(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("the conversation directory holds %d entries, want none", len(entries))
+	}
+}
+
+func TestConversationsThatSanitiseAlikeGetDifferentDirectories(t *testing.T) {
+	a := newAgent(t, "", time.Minute)
+
+	for _, pair := range [][2]string{
+		{"respondio:12345", "acp:respondio-12345"},
+		{"acp:\u738b\u5c0f\u660e", "acp:\u674e\u5c0f\u5f3a"},
+		{"acp:abc", "acp:ABC"},
+	} {
+		if first, second := a.directory(pair[0]), a.directory(pair[1]); strings.EqualFold(first, second) {
+			t.Fatalf("%q and %q share the directory %q", pair[0], pair[1], first)
+		}
 	}
 }
 

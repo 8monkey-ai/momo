@@ -5,6 +5,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -137,9 +139,12 @@ func (a *Agent) hold(ctx context.Context, conversation string) (func(), error) {
 // directory is the one place a conversation identity becomes a path. Every
 // character that is not a letter, a digit or a hyphen becomes a hyphen, so no
 // channel has to be trusted to supply a safe name, and no channel added later
-// has to be examined for it.
+// has to be examined for it. The digest of the identity keeps two identities
+// that give the same readable name, and two that differ in case only, in two
+// directories.
 func (a *Agent) directory(conversation string) string {
-	return filepath.Join(a.dataDir, strings.Map(safe, conversation))
+	sum := sha256.Sum256([]byte(conversation))
+	return filepath.Join(a.dataDir, strings.Map(safe, conversation)+"-"+hex.EncodeToString(sum[:4]))
 }
 
 func safe(r rune) rune {

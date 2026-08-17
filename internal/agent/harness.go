@@ -116,18 +116,20 @@ func (h *harness) session(ctx context.Context, sessions acp.SessionCapabilities,
 
 // resume takes the first session the harness lists for the directory: one
 // directory holds one conversation, so the first page is the whole answer. A
-// harness that cannot list or cannot resume is not an error, because a new
-// session answers the prompt.
+// session listed under another directory belongs to another conversation, so the
+// listed cwd decides and not the order of the list. A harness that cannot list or
+// cannot resume is not an error, because a new session answers the prompt.
 func (h *harness) resume(ctx context.Context, dir string) (string, bool) {
 	var listed acp.ListSessionsResult
 	if err := h.conn.Call(ctx, acp.MethodListSessions, acp.ListSessionsParams{Cwd: dir}, &listed); err != nil {
 		h.log.Warn("listing the harness sessions failed, the turn gets a new session", "error", err)
 		return "", false
 	}
-	if len(listed.Sessions) == 0 {
+	i := slices.IndexFunc(listed.Sessions, func(s acp.SessionInfo) bool { return s.Cwd == dir })
+	if i < 0 {
 		return "", false
 	}
-	id := listed.Sessions[0].SessionID
+	id := listed.Sessions[i].SessionID
 	params := acp.ResumeSessionParams{SessionID: id, Cwd: dir, MCPServers: []acp.MCPServer{}}
 	if err := h.conn.Call(ctx, acp.MethodResumeSession, params, nil); err != nil {
 		h.log.Warn("resuming the harness session failed, the turn gets a new session", "session", id, "error", err)
