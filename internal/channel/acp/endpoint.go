@@ -11,6 +11,7 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
+	wire "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
@@ -85,7 +86,7 @@ func (e *endpoint) post(w http.ResponseWriter, r *http.Request) {
 	// A notification has no id to answer under, and session/cancel is v1's only
 	// client-to-server notification. Refusing here keeps momo from answering
 	// under a fabricated id on a stream where nothing correlates with it.
-	if req.Notif && req.Method != methodCancel {
+	if req.Notif && req.Method != wire.MethodCancel {
 		writeError(w, http.StatusBadRequest, jsonrpc2.CodeInvalidRequest, fmt.Sprintf("%s requires an id", req.Method))
 		return
 	}
@@ -95,7 +96,7 @@ func (e *endpoint) post(w http.ResponseWriter, r *http.Request) {
 func (e *endpoint) dispatch(w http.ResponseWriter, r *http.Request, req *jsonrpc2.Request) {
 	// initialize is the one method answered in the response to the POST that
 	// carried it, because it is what issues the connection id.
-	if req.Method == methodInitialize {
+	if req.Method == wire.MethodInitialize {
 		e.initialize(w, req)
 		return
 	}

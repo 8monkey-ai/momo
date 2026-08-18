@@ -59,3 +59,67 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
 }
+
+// deliver is a channel that hands one message to the handler it was built with,
+// in both directions, so a test can observe what the handler sees.
+func deliver(conversation string) Factory {
+	return func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		m := core.Message{Conversation: conversation, Content: core.Text("hello")}
+		h.Received(context.Background(), m, func(context.Context, []core.ContentBlock) error { return nil })
+		h.Sent(context.Background(), m)
+		return fixed{}, nil
+	}
+}
+
+type recorder struct {
+	received []string
+	sent     []string
+}
+
+func (r *recorder) Received(_ context.Context, m core.Message, _ core.Reply) {
+	r.received = append(r.received, m.Conversation)
+}
+
+func (r *recorder) Sent(_ context.Context, m core.Message) {
+	r.sent = append(r.sent, m.Conversation)
+}
+
+func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
+	isolateFactories(t)
+	Register("respondio", deliver("123"))
+	Register("acp", deliver("123"))
+	got := &recorder{}
+
+	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings, "acp": noSettings}, got); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(got.received) != 2 || got.received[0] != "acp:123" || got.received[1] != "respondio:123" {
+		t.Fatalf("received = %v, want [acp:123 respondio:123]", got.received)
+	}
+}
+
+func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
+	isolateFactories(t)
+	Register("respondio", deliver("123"))
+	got := &recorder{}
+
+	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(got.sent) != 1 || got.sent[0] != "respondio:123" {
+		t.Fatalf("sent = %v, want [respondio:123]", got.sent)
+	}
+}
+
+func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
+	isolateFactories(t)
+	Register("respondio", deliver("acp:123"))
+	got := &recorder{}
+
+	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(got.received) != 1 || got.received[0] != "respondio:acp:123" {
+		t.Fatalf("received = %v, want [respondio:acp:123]", got.received)
+	}
+}

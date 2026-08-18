@@ -48,8 +48,11 @@ func TextOf(content []ContentBlock) string {
 
 // Message is a message exchanged with a contact, in the shape the core acts on.
 type Message struct {
-	Contact string
-	Content []ContentBlock
+	// Conversation is the conversation the message belongs to. A channel fills it
+	// with its own contact id, and channel.Build qualifies it with the channel
+	// name, so a handler always reads {channel}:{contact}.
+	Conversation string
+	Content      []ContentBlock
 }
 
 // Reply sends a reply on the channel the message arrived on. The destination is
@@ -65,23 +68,38 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
-// EchoHandler answers every incoming message with the content it carried.
-//
-// ponytail: this is the proof that the reply path works end to end, nothing
-// more; the agent harness replaces it.
-type EchoHandler struct {
-	Log *slog.Logger
+// Agent runs one turn of one conversation: the message goes in, and the complete
+// reply comes out. The implementation is outside the core, so the core carries no
+// protocol and no process.
+type Agent interface {
+	Turn(ctx context.Context, m Message) ([]ContentBlock, error)
 }
 
-func (h EchoHandler) Received(ctx context.Context, m Message, reply Reply) {
-	h.Log.Info("message received", attrs(m)...)
-	if err := reply(ctx, m.Content); err != nil {
-		h.Log.Error("reply failed", "contact", m.Contact, "error", err)
+// NewHandler answers each incoming message with the reply of one agent turn, on
+// the channel the message arrived on.
+func NewHandler(log *slog.Logger, a Agent) Handler {
+	return handler{log: log, agent: a}
+}
+
+type handler struct {
+	log   *slog.Logger
+	agent Agent
+}
+
+func (h handler) Received(ctx context.Context, m Message, reply Reply) {
+	h.log.Info("message received", attrs(m)...)
+	content, err := h.agent.Turn(ctx, m)
+	if err != nil {
+		h.log.Error("turn failed", "conversation", m.Conversation, "error", err)
+		return
+	}
+	if err := reply(ctx, content); err != nil {
+		h.log.Error("reply failed", "conversation", m.Conversation, "error", err)
 	}
 }
 
-func (h EchoHandler) Sent(_ context.Context, m Message) {
-	h.Log.Info("message sent", attrs(m)...)
+func (h handler) Sent(_ context.Context, m Message) {
+	h.log.Info("message sent", attrs(m)...)
 }
 
 // attrs reports a message's block types and its text, and never the base64 data
@@ -92,5 +110,5 @@ func attrs(m Message) []any {
 	for _, block := range m.Content {
 		types = append(types, block.Type)
 	}
-	return []any{"contact", m.Contact, "blocks", types, "text", TextOf(m.Content)}
+	return []any{"conversation", m.Conversation, "blocks", types, "text", TextOf(m.Content)}
 }

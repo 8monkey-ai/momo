@@ -38,6 +38,27 @@ type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Cha
 
 var factories = map[string]Factory{}
 
+// qualifying prefixes a message's conversation with the channel's configured
+// name before the handler sees it. A channel never sees the qualified value, so
+// it cannot omit the name and cannot report another channel's name.
+type qualifying struct {
+	name string
+	h    core.Handler
+}
+
+func (q qualifying) qualify(m core.Message) core.Message {
+	m.Conversation = q.name + ":" + m.Conversation
+	return m
+}
+
+func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Reply) {
+	q.h.Received(ctx, q.qualify(m), reply)
+}
+
+func (q qualifying) Sent(ctx context.Context, m core.Message) {
+	q.h.Sent(ctx, q.qualify(m))
+}
+
 // Register makes a channel available under the name operators use to configure
 // it. It is meant to be called from a package's init.
 func Register(name string, f Factory) {
@@ -61,7 +82,7 @@ func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler)
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], h)
+		c, err := f(lifetime, configs[name], qualifying{name: name, h: h})
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

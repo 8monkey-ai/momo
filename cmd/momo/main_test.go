@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,10 +111,96 @@ func loadConfig(t *testing.T, body string) *config.Config {
 	return cfg
 }
 
+// agentBlock is the agent block every configuration a test serves with needs.
+func agentBlock(t *testing.T, command string) string {
+	t.Helper()
+	return fmt.Sprintf("agent:\n  command: [%q]\n  data_dir: %q\n", command, t.TempDir())
+}
+
+// buildStub builds the stub ACP agent the agent package's tests use.
+func buildStub(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stubagent")
+	cmd := exec.Command("go", "build", "-o", path, "../../internal/agent/testdata/stubagent")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building the stub agent: %v\n%s", err, out)
+	}
+	return path
+}
+
+// TestAMessageOnRespondioIsAnsweredByTheAgent drives the whole path: a signed
+// webhook arrives, the agent subprocess runs the turn, and the content it
+// streamed leaves as one send-a-message call.
+func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
+	sent := make(chan string, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the API call: %v", err)
+			return
+		}
+		sent <- r.URL.Path + " " + string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
+		fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n", api.URL))
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() { _ = serve(ctx, discard(), cfg, l) }()
+
+	event := `{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":"hi"}}}`
+	mac := hmac.New(sha256.New, []byte("secret"))
+	mac.Write([]byte(event))
+	req, err := http.NewRequest(http.MethodPost, "http://"+l.Addr().String()+"/respondio/received", strings.NewReader(event))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Webhook-Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("webhook: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("webhook = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	select {
+	case call := <-sent:
+		want := `/contact/id:123/message {"message":{"text":"hello from the stub agent","type":"text"}}`
+		if call != want {
+			t.Fatalf("respond.io received %s, want %s", call, want)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no reply reached respond.io")
+	}
+}
+
+// TestServeStopsWithoutAnAgent pins the required block: momo answers a message
+// with an agent, so a configuration with no agent never serves.
+func TestServeStopsWithoutAnAgent(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nchannels:\n  acp:\n    token: secret\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	if err := serve(context.Background(), discard(), cfg, l); err == nil {
+		t.Fatal("serve succeeded, want an error naming the agent configuration")
+	}
+}
+
 // TestShutdownDoesNotWaitForAnOpenStream drives shutdown the way run does: the
 // process cancels the context, and the channels are told through their lifetime.
 func TestShutdownDoesNotWaitForAnOpenStream(t *testing.T) {
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nshutdown_timeout: 30s\nchannels:\n  acp:\n    token: secret\n")
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nshutdown_timeout: 30s\n"+agentBlock(t, "/bin/true")+"channels:\n  acp:\n    token: secret\n")
 	l, err := listen(cfg)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -216,7 +306,7 @@ func TestListenerStopsAcceptingPastTheConfiguredMaximum(t *testing.T) {
 // net/http clears the read deadline before the handler runs, so a stream stays
 // usable while a request's body is still bounded in time.
 func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nread_timeout: \"300ms\"\nchannels:\n  acp:\n    token: secret\n")
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\nread_timeout: \"300ms\"\n"+agentBlock(t, "/bin/true")+"channels:\n  acp:\n    token: secret\n")
 	l, err := listen(cfg)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

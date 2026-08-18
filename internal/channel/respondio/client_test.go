@@ -14,6 +14,18 @@ import (
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
+// echoAgent answers with the content the message carried, so a test drives the
+// reply path with no agent subprocess.
+type echoAgent struct{}
+
+func (echoAgent) Turn(_ context.Context, m core.Message) ([]core.ContentBlock, error) {
+	return m.Content, nil
+}
+
+func echoHandler() core.Handler {
+	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
+}
+
 // api is a stand-in for respond.io's REST API, recording what reached it.
 type api struct {
 	url      string
@@ -148,7 +160,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 			a := newAPI(t)
 			h := &webhook{
 				secret: secret,
-				core:   core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+				core:   echoHandler(),
 				client: a.client(),
 			}
 			body := payload(tc.event)
@@ -168,7 +180,7 @@ func TestEchoAnswersAnIncomingMessageOnlyOnce(t *testing.T) {
 
 func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	a := newAPI(t)
-	log := core.EchoHandler{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	log := echoHandler()
 	for _, id := range []string{"111", "222"} {
 		body := `{"event_type":"message.received","contact":{"id":` + id + `},` +
 			`"message":{"message":{"type":"text","text":"hi"}}}`
