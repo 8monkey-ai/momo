@@ -34,13 +34,23 @@ func (c *client) reply(contactID string) core.Reply {
 }
 
 func (c *client) send(ctx context.Context, contactID, text string) error {
-	body, err := json.Marshal(map[string]any{
+	return c.post(ctx, contactID, "message", map[string]any{
 		"message": map[string]string{"type": textMessage, "text": text},
 	})
+}
+
+// comment adds an internal note to the contact's conversation. Only the
+// operators of the workspace read it; the contact does not.
+func (c *client) comment(ctx context.Context, contactID, text string) error {
+	return c.post(ctx, contactID, "comment", map[string]string{"text": text})
+}
+
+func (c *client) post(ctx context.Context, contactID, resource string, payload any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/contact/id:%s/message", c.url, contactID)
+	url := fmt.Sprintf("%s/contact/id:%s/%s", c.url, contactID, resource)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -49,14 +59,14 @@ func (c *client) send(ctx context.Context, contactID, text string) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("respond.io: sending to contact %s: %w", contactID, err)
+		return fmt.Errorf("respond.io: posting a %s for contact %s: %w", resource, contactID, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		// The body explains the refusal; the bound keeps an HTML error page out of
 		// the log.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("respond.io: sending to contact %s: status %d: %s", contactID, resp.StatusCode, detail)
+		return fmt.Errorf("respond.io: posting a %s for contact %s: status %d: %s", resource, contactID, resp.StatusCode, detail)
 	}
 	return nil
 }

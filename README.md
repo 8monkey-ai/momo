@@ -263,3 +263,7 @@ the directory, continues that history.
 The agent inherits momo's environment, so credentials the agent needs, such as an API key,
 belong in the environment momo runs with. The agent's stderr output reaches momo's log,
 which is the place to look when a turn fails.
+
+A turn that produces no reply is reported on the channel the message arrived on, and never
+to the contact: respond.io gets an internal comment on the conversation, and an ACP client
+gets an error in answer to `session/prompt` in place of a stop reason.

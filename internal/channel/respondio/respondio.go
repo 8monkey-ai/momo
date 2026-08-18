@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -134,11 +135,21 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
-		h.core.Received(ctx, m, h.client.reply(contactID))
+		if err := h.core.Received(ctx, m, h.client.reply(contactID)); err != nil {
+			h.report(ctx, contactID, err)
+		}
 	case eventSent:
 		// An outgoing message is momo's own reply as often as an operator's; nothing
 		// answers it.
 		h.core.Sent(ctx, m)
+	}
+}
+
+// report tells the operators of the conversation that the message got no reply.
+// The comment is internal, so a failed turn never reaches the contact.
+func (h *webhook) report(ctx context.Context, contactID string, turn error) {
+	if err := h.client.comment(ctx, contactID, "momo could not answer this message: "+turn.Error()); err != nil {
+		slog.Error("failed turn not reported", "contact", contactID, "turn", turn, "error", err)
 	}
 }
 

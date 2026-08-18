@@ -51,8 +51,8 @@ func (q qualifying) qualify(m core.Message) core.Message {
 	return m
 }
 
-func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Reply) {
-	q.h.Received(ctx, q.qualify(m), reply)
+func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Reply) error {
+	return q.h.Received(ctx, q.qualify(m), reply)
 }
 
 func (q qualifying) Sent(ctx context.Context, m core.Message) {

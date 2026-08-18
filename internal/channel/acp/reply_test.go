@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -137,9 +139,27 @@ func TestAPromptWhoseStreamIsGoneStillCompletes(t *testing.T) {
 	connID := h.initialize(t)
 	sessionID := h.createSession(t, connID)
 
-	// Nothing listens to the session's stream, so the reply cannot be delivered;
-	// the failure reaches the handler, not the client's request.
+	// Nothing listens to the session's stream, so neither the reply nor the
+	// response can be delivered; the POST that carried the prompt is accepted all
+	// the same.
 	h.prompt(t, connID, sessionID, `{"type":"text","text":"into the void"}`)
+}
+
+func TestAFailedTurnAnswersThePromptWithAnError(t *testing.T) {
+	h := unserved()
+	h.serve(t, core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{}))
+	connID, sessionID, connStream, sessionStream := h.session(t)
+
+	h.prompt(t, connID, sessionID, `{"type":"text","text":"hello"}`)
+
+	resp := sessionStream.next(t)
+	if resp.Error == nil {
+		t.Fatalf("prompt response = %+v, want an error", resp)
+	}
+	if !strings.Contains(resp.Error.Message, "the agent exited before it replied") {
+		t.Fatalf("error %q does not carry the reason the turn failed", resp.Error.Message)
+	}
+	connStream.silent(t)
 }
 
 func TestReplyReportsAnUndeliveredNotification(t *testing.T) {

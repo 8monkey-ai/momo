@@ -61,11 +61,15 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 }
 
 // deliver is a channel that hands one message to the handler it was built with,
-// in both directions, so a test can observe what the handler sees.
-func deliver(conversation string) Factory {
+// in both directions, so a test can observe what the handler sees. What the
+// handler reports about the incoming message reaches failed.
+func deliver(conversation string, failed *error) Factory {
 	return func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
 		m := core.Message{Conversation: conversation, Content: core.Text("hello")}
-		h.Received(context.Background(), m, func(context.Context, []core.ContentBlock) error { return nil })
+		err := h.Received(context.Background(), m, func(context.Context, []core.ContentBlock) error { return nil })
+		if failed != nil {
+			*failed = err
+		}
 		h.Sent(context.Background(), m)
 		return fixed{}, nil
 	}
@@ -74,10 +78,12 @@ func deliver(conversation string) Factory {
 type recorder struct {
 	received []string
 	sent     []string
+	err      error
 }
 
-func (r *recorder) Received(_ context.Context, m core.Message, _ core.Reply) {
+func (r *recorder) Received(_ context.Context, m core.Message, _ core.Reply) error {
 	r.received = append(r.received, m.Conversation)
+	return r.err
 }
 
 func (r *recorder) Sent(_ context.Context, m core.Message) {
@@ -86,8 +92,8 @@ func (r *recorder) Sent(_ context.Context, m core.Message) {
 
 func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
 	isolateFactories(t)
-	Register("respondio", deliver("123"))
-	Register("acp", deliver("123"))
+	Register("respondio", deliver("123", nil))
+	Register("acp", deliver("123", nil))
 	got := &recorder{}
 
 	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings, "acp": noSettings}, got); err != nil {
@@ -100,7 +106,7 @@ func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
 
 func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
 	isolateFactories(t)
-	Register("respondio", deliver("123"))
+	Register("respondio", deliver("123", nil))
 	got := &recorder{}
 
 	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
@@ -111,9 +117,23 @@ func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
 	}
 }
 
+func TestChannelLearnsThatTheTurnFailed(t *testing.T) {
+	isolateFactories(t)
+	var failed error
+	Register("respondio", deliver("123", &failed))
+	turn := errors.New("the agent exited before it replied")
+
+	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, &recorder{err: turn}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !errors.Is(failed, turn) {
+		t.Fatalf("the channel got %v, want it to wrap %v", failed, turn)
+	}
+}
+
 func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
 	isolateFactories(t)
-	Register("respondio", deliver("acp:123"))
+	Register("respondio", deliver("acp:123", nil))
 	got := &recorder{}
 
 	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
