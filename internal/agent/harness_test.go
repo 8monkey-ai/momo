@@ -187,6 +187,71 @@ func TestTheSessionWorksInAnAbsoluteDirectory(t *testing.T) {
 	}
 }
 
+// sessionTrace runs one turn for each conversation, one after the other, and
+// answers the lines the stub agent wrote and the data directory they name, so a
+// test states the whole session traffic as literals.
+func sessionTrace(t *testing.T, conversations ...string) ([]string, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "trace")
+	t.Setenv("STUBAGENT_TRACE", path)
+	h, root := harness(t)
+	for _, conversation := range conversations {
+		if _, err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")}); err != nil {
+			t.Fatalf("Turn: %v", err)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the stub agent wrote no trace: %v", err)
+	}
+	return strings.Split(strings.TrimRight(string(raw), "\n"), "\n"), root
+}
+
+func wantTrace(t *testing.T, got, want []string) {
+	t.Helper()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("trace =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestASecondMessageResumesTheSessionOfTheFirst holds momo to one session for
+// each conversation: the second turn lists and resumes, and creates nothing.
+func TestASecondMessageResumesTheSessionOfTheFirst(t *testing.T) {
+	got, root := sessionTrace(t, "respondio:1", "respondio:1")
+	dir := filepath.Join(root, dirName("respondio:1"))
+	wantTrace(t, got, []string{
+		"session/list\t" + dir,
+		"session/new\t" + dir + "\tstub-session-0",
+		"session/list\t" + dir,
+		"session/resume\tstub-session-0",
+	})
+}
+
+func TestTwoConversationsGetTwoSessions(t *testing.T) {
+	got, root := sessionTrace(t, "respondio:1", "respondio:2")
+	one := filepath.Join(root, dirName("respondio:1"))
+	two := filepath.Join(root, dirName("respondio:2"))
+	wantTrace(t, got, []string{
+		"session/list\t" + one,
+		"session/new\t" + one + "\tstub-session-0",
+		"session/list\t" + two,
+		"session/new\t" + two + "\tstub-session-1",
+	})
+}
+
+// TestAnAgentWithoutSessionCapabilitiesGetsANewSession pins what momo does with
+// an agent it cannot list: momo keeps no session id of its own, so every turn
+// starts a session.
+func TestAnAgentWithoutSessionCapabilitiesGetsANewSession(t *testing.T) {
+	t.Setenv("STUBAGENT_NO_SESSION_CAPS", "1")
+	got, root := sessionTrace(t, "respondio:1", "respondio:1")
+	dir := filepath.Join(root, dirName("respondio:1"))
+	wantTrace(t, got, []string{
+		"session/new\t" + dir + "\tstub-session-0",
+		"session/new\t" + dir + "\tstub-session-1",
+	})
+}
+
 func TestNewRefusesAnUnusableConfiguration(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {

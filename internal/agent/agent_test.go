@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// TestTheNameOfAnIdentityIsFixed states one name as a literal. The name decides
+// where a conversation's session lives, so a change to the readable part, to the
+// digest, or to their order moves every conversation that exists to a directory
+// with no session in it.
+func TestTheNameOfAnIdentityIsFixed(t *testing.T) {
+	if got := dirName("respondio:1"); got != "respondio-1-62f493009d38a7dd" {
+		t.Fatalf("dirName = %q, want \"respondio-1-62f493009d38a7dd\"", got)
+	}
+}
+
 func TestDirNameIsOneSafeSegment(t *testing.T) {
 	for _, identity := range []string{"respondio:../etc", "acp:/absolute/path", "..", ".", "", "acp:.."} {
 		got := dirName(identity)

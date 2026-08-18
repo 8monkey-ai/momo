@@ -19,8 +19,9 @@ import (
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
-// run performs the turn on a subprocess of its own: initialize, a new session in
-// the conversation's directory, and the prompt. Nothing is tried a second time.
+// run performs the turn on a subprocess of its own: initialize, the
+// conversation's session in its directory, and the prompt. Nothing is tried a
+// second time.
 func (h *Harness) run(ctx context.Context, dir string, prompt []core.ContentBlock) ([]core.ContentBlock, error) {
 	p, err := h.start(ctx, dir)
 	if err != nil {
@@ -28,10 +29,11 @@ func (h *Harness) run(ctx context.Context, dir string, prompt []core.ContentBloc
 	}
 	// Every exit of the turn, an error included, stops the subprocess.
 	defer p.stop()
-	if err := p.initialize(ctx); err != nil {
+	capabilities, err := p.initialize(ctx)
+	if err != nil {
 		return nil, err
 	}
-	sessionID, err := p.newSession(ctx, dir)
+	sessionID, err := p.session(ctx, dir, capabilities)
 	if err != nil {
 		return nil, err
 	}
@@ -92,16 +94,58 @@ func (p *process) stop() {
 	}
 }
 
-func (p *process) initialize(ctx context.Context) error {
+func (p *process) initialize(ctx context.Context) (wire.SessionCapabilities, error) {
 	var res wire.InitializeResult
 	params := wire.InitializeParams{ProtocolVersion: wire.ProtocolVersion}
 	if err := p.conn.Call(ctx, wire.MethodInitialize, params, &res); err != nil {
-		return fmt.Errorf("initialize: %w", err)
+		return wire.SessionCapabilities{}, fmt.Errorf("initialize: %w", err)
 	}
 	if res.ProtocolVersion != wire.ProtocolVersion {
-		return fmt.Errorf("the agent speaks protocol version %d, momo speaks %d", res.ProtocolVersion, wire.ProtocolVersion)
+		return wire.SessionCapabilities{}, fmt.Errorf("the agent speaks protocol version %d, momo speaks %d", res.ProtocolVersion, wire.ProtocolVersion)
 	}
-	return nil
+	return res.AgentCapabilities.SessionCapabilities, nil
+}
+
+// session continues the conversation's session when the agent both lists and
+// resumes, and starts a new one otherwise: momo holds no session id of its own,
+// so a session momo cannot list is a session momo cannot name.
+func (p *process) session(ctx context.Context, dir string, capabilities wire.SessionCapabilities) (string, error) {
+	if capabilities.List == nil || capabilities.Resume == nil {
+		return p.newSession(ctx, dir)
+	}
+	sessionID, err := p.listedSession(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	if sessionID == "" {
+		return p.newSession(ctx, dir)
+	}
+	if err := p.resumeSession(ctx, sessionID, dir); err != nil {
+		p.log.Warn("resuming the session, the turn continues in a new one", "session", sessionID, "error", err)
+		return p.newSession(ctx, dir)
+	}
+	return sessionID, nil
+}
+
+// listedSession answers the session the directory holds, and the empty string
+// when it holds none. It reads the first entry of the first page only: one
+// conversation directory keeps at most one session, so a cursor names nothing
+// momo wants.
+func (p *process) listedSession(ctx context.Context, dir string) (string, error) {
+	var res wire.ListSessionsResult
+	params := wire.ListSessionsParams{Cwd: dir}
+	if err := p.conn.Call(ctx, wire.MethodListSessions, params, &res); err != nil {
+		return "", fmt.Errorf("session/list: %w", err)
+	}
+	if len(res.Sessions) == 0 {
+		return "", nil
+	}
+	return res.Sessions[0].SessionID, nil
+}
+
+func (p *process) resumeSession(ctx context.Context, sessionID, dir string) error {
+	params := wire.ResumeSessionParams{SessionID: sessionID, Cwd: dir, McpServers: []any{}}
+	return p.conn.Call(ctx, wire.MethodResumeSession, params, nil)
 }
 
 func (p *process) newSession(ctx context.Context, dir string) (string, error) {

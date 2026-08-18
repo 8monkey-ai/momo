@@ -236,7 +236,8 @@ One message is one turn:
 1. momo starts the agent as a subprocess, with the conversation's own directory under
    `data_dir` as its working directory.
 2. momo sends `initialize`, and the agent answers with protocol version 1.
-3. momo opens a session on that directory and sends the message as the prompt.
+3. momo continues the conversation's session on that directory, or opens one when the
+   conversation has none, and sends the message as the prompt.
 4. The agent streams its answer, and momo collects it.
 5. momo sends the collected answer as one message on the channel the message arrived on.
 6. momo interrupts the agent, waits up to five seconds for it to store its session, and
@@ -249,8 +250,10 @@ conversations. A turn that reaches `turn_timeout` fails, and the subprocess is s
 
 Each conversation gets one directory under `data_dir`, named after the channel and the
 contact. momo creates it empty, and the agent owns everything in it. momo keeps no storage
-of its own. Every turn opens a session of its own, so an agent that writes a history in its
-directory does not continue it yet.
+of its own, session ids included: it asks the agent with `session/list` which session the
+directory holds, and continues it with `session/resume`. An agent that does not serve both
+methods gets a new session on every turn. An agent that serves both, and keeps its history in
+the directory, continues that history.
 
 The agent inherits momo's environment, so credentials the agent needs, such as an API key,
 belong in the environment momo runs with. The agent's stderr output reaches momo's log,
