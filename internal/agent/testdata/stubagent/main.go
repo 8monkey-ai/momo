@@ -1,6 +1,7 @@
 // Command stubagent is an ACP v1 agent for the agent package's tests. It speaks
 // newline-delimited JSON-RPC 2.0 on stdin and stdout, answers initialize,
-// session/new, session/list, session/resume and session/prompt, and exits on EOF.
+// session/new, session/list, session/resume and session/prompt, asks for the
+// permission a test asks it to ask for, and exits on EOF.
 package main
 
 import (
@@ -41,7 +42,7 @@ func main() {
 		if err := dec.Decode(&req); err != nil {
 			return
 		}
-		if err := answer(enc, req); err != nil {
+		if err := answer(dec, enc, req); err != nil {
 			fmt.Fprintln(os.Stderr, "stubagent:", err)
 			return
 		}
@@ -57,7 +58,7 @@ func reportPID() error {
 	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
 }
 
-func answer(enc *json.Encoder, req request) error {
+func answer(dec *json.Decoder, enc *json.Encoder, req request) error {
 	switch req.Method {
 	case "initialize":
 		return respond(enc, req.ID, map[string]any{
@@ -71,7 +72,7 @@ func answer(enc *json.Encoder, req request) error {
 	case "session/resume":
 		return resumeSession(enc, req)
 	case "session/prompt":
-		return prompt(enc, req)
+		return prompt(dec, enc, req)
 	default:
 		return respondError(enc, req.ID, req.Method+" is not implemented")
 	}
@@ -193,12 +194,15 @@ func created(cwd string) ([]string, int, error) {
 	return ids, total, nil
 }
 
-func prompt(enc *json.Encoder, req request) error {
+func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
 	if err := synchronise(); err != nil {
 		return err
 	}
 	var p params
 	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return err
+	}
+	if err := requestPermission(dec, enc, p.SessionID); err != nil {
 		return err
 	}
 	for _, text := range chunks {
@@ -214,6 +218,48 @@ func prompt(enc *json.Encoder, req request) error {
 		}
 	}
 	return respond(enc, req.ID, map[string]any{"stopReason": "end_turn"})
+}
+
+// requestPermission asks the client, in the middle of the turn, to allow one tool
+// call, and records the outcome the client answered with. The refusing option
+// comes first, so a client that selects the first option of the list is told
+// apart from one that selects an allowing option.
+func requestPermission(dec *json.Decoder, enc *json.Encoder, sessionID string) error {
+	offered := os.Getenv("STUBAGENT_PERMISSION")
+	if offered == "" {
+		return nil
+	}
+	options := []map[string]any{{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}}
+	if offered != "refusals" {
+		options = append(options,
+			map[string]any{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+			map[string]any{"optionId": "allow-always", "name": "Allow always", "kind": "allow_always"},
+		)
+	}
+	if err := enc.Encode(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "session/request_permission",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"toolCall":  map[string]any{"toolCallId": "stub-call"},
+			"options":   options,
+		},
+	}); err != nil {
+		return err
+	}
+	var answer struct {
+		Result struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := dec.Decode(&answer); err != nil {
+		return err
+	}
+	return trace("session/request_permission", answer.Result.Outcome.Outcome, answer.Result.Outcome.OptionID)
 }
 
 // synchronise holds the prompt until the test releases it: the stub dials the
