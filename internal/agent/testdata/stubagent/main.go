@@ -1,15 +1,17 @@
 // Command stubagent is an ACP v1 agent for the agent package's tests. It speaks
 // newline-delimited JSON-RPC 2.0 on stdin and stdout, answers initialize,
-// session/new and session/prompt, and exits on EOF.
+// session/new, session/list, session/resume and session/prompt, and exits on EOF.
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // chunks is the reply of every prompt, one content block for each element, so a
@@ -20,6 +22,12 @@ type request struct {
 	ID     *json.RawMessage `json:"id"`
 	Method string           `json:"method"`
 	Params json.RawMessage  `json:"params"`
+}
+
+// params holds every member of a session method the stub reads.
+type params struct {
+	Cwd       string `json:"cwd"`
+	SessionID string `json:"sessionId"`
 }
 
 func main() {
@@ -52,12 +60,16 @@ func reportPID() error {
 func answer(enc *json.Encoder, req request) error {
 	switch req.Method {
 	case "initialize":
-		return respond(enc, req.ID, map[string]any{"protocolVersion": 1})
+		return respond(enc, req.ID, map[string]any{
+			"protocolVersion":   1,
+			"agentCapabilities": map[string]any{"sessionCapabilities": sessionCapabilities()},
+		})
 	case "session/new":
-		if err := reportCwd(req.Params); err != nil {
-			return err
-		}
-		return respond(enc, req.ID, map[string]any{"sessionId": "stub-session"})
+		return newSession(enc, req)
+	case "session/list":
+		return listSessions(enc, req)
+	case "session/resume":
+		return resumeSession(enc, req)
 	case "session/prompt":
 		return prompt(enc, req)
 	default:
@@ -65,28 +77,127 @@ func answer(enc *json.Encoder, req request) error {
 	}
 }
 
+// sessionCapabilities advertises what the test asks of this run: a capability is
+// an object when supported and absent when not.
+func sessionCapabilities() map[string]any {
+	if os.Getenv("STUBAGENT_NO_SESSION_CAPS") != "" {
+		return map[string]any{}
+	}
+	return map[string]any{"list": map[string]any{}, "resume": map[string]any{}}
+}
+
+func newSession(enc *json.Encoder, req request) error {
+	var p params
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return err
+	}
+	if err := reportCwd(p.Cwd); err != nil {
+		return err
+	}
+	_, total, err := created(p.Cwd)
+	if err != nil {
+		return err
+	}
+	sessionID := "stub-session-" + strconv.Itoa(total)
+	if err := trace("session/new", p.Cwd, sessionID); err != nil {
+		return err
+	}
+	return respond(enc, req.ID, map[string]any{"sessionId": sessionID})
+}
+
+func listSessions(enc *json.Encoder, req request) error {
+	var p params
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return err
+	}
+	ids, _, err := created(p.Cwd)
+	if err != nil {
+		return err
+	}
+	if err := trace("session/list", p.Cwd); err != nil {
+		return err
+	}
+	sessions := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		sessions = append(sessions, map[string]any{"sessionId": id, "cwd": p.Cwd})
+	}
+	return respond(enc, req.ID, map[string]any{"sessions": sessions})
+}
+
+func resumeSession(enc *json.Encoder, req request) error {
+	var p params
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return err
+	}
+	if err := trace("session/resume", p.SessionID); err != nil {
+		return err
+	}
+	return respond(enc, req.ID, map[string]any{})
+}
+
 // reportCwd tells the test which working directory momo asked the session for.
-func reportCwd(params json.RawMessage) error {
+func reportCwd(cwd string) error {
 	path := os.Getenv("STUBAGENT_CWD_FILE")
 	if path == "" {
 		return nil
 	}
-	var p struct {
-		Cwd string `json:"cwd"`
+	return os.WriteFile(path, []byte(cwd), 0o600)
+}
+
+func traceFile() string { return os.Getenv("STUBAGENT_TRACE") }
+
+// trace appends one tab separated line for the method handled. The file is the
+// stub's session store as well: momo starts a process for each turn, so a session
+// outlives its process only in a file, and the file lies outside the conversation
+// directory, which stays empty.
+func trace(fields ...string) error {
+	path := traceFile()
+	if path == "" {
+		return nil
 	}
-	if err := json.Unmarshal(params, &p); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(p.Cwd), 0o600)
+	defer func() { _ = f.Close() }()
+	_, err = fmt.Fprintln(f, strings.Join(fields, "\t"))
+	return err
+}
+
+// created answers the sessions of cwd, in creation order, and how many sessions
+// the store holds altogether, which names the next one.
+func created(cwd string) ([]string, int, error) {
+	path := traceFile()
+	if path == "" {
+		return nil, 0, nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	var ids []string
+	total := 0
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || fields[0] != "session/new" {
+			continue
+		}
+		total++
+		if fields[1] == cwd {
+			ids = append(ids, fields[2])
+		}
+	}
+	return ids, total, nil
 }
 
 func prompt(enc *json.Encoder, req request) error {
 	if err := synchronise(); err != nil {
 		return err
 	}
-	var p struct {
-		SessionID string `json:"sessionId"`
-	}
+	var p params
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return err
 	}
