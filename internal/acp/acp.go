@@ -17,8 +17,10 @@ const (
 	MethodResumeSession = "session/resume"
 	MethodPrompt        = "session/prompt"
 	MethodCancel        = "session/cancel"
-	// MethodUpdate is momo's only agent-to-client message: the reply to a prompt.
-	MethodUpdate = "session/update"
+	// MethodUpdate and MethodRequestPermission are the agent-to-client messages
+	// momo serves: the reply to a prompt, and the permission one tool call needs.
+	MethodUpdate            = "session/update"
+	MethodRequestPermission = "session/request_permission"
 
 	// SessionUpdateAgentMessageChunk is the update kind of one content block of
 	// the agent's message.
@@ -26,6 +28,16 @@ const (
 
 	// StopReasonEndTurn ends a prompt turn normally.
 	StopReasonEndTurn = "end_turn"
+
+	// PermissionAllowOnce and PermissionAllowAlways are the option kinds of v1
+	// that let the action happen. The two remaining kinds refuse it.
+	PermissionAllowOnce   = "allow_once"
+	PermissionAllowAlways = "allow_always"
+
+	// OutcomeSelected answers a permission request with one of its options, and
+	// OutcomeCancelled answers it with none.
+	OutcomeSelected  = "selected"
+	OutcomeCancelled = "cancelled"
 )
 
 // InitializeParams opens the handshake with the version the sender speaks.
@@ -115,4 +127,27 @@ type UpdateParams struct {
 type Update struct {
 	SessionUpdate string            `json:"sessionUpdate"`
 	Content       core.ContentBlock `json:"content"`
+}
+
+// RequestPermissionParams offers the options one tool call may be answered with.
+// v1 sends the tool call as well, which is nothing momo decides from.
+type RequestPermissionParams struct {
+	SessionID string             `json:"sessionId"`
+	Options   []PermissionOption `json:"options"`
+}
+
+type PermissionOption struct {
+	OptionID string `json:"optionId"`
+	Kind     string `json:"kind"`
+}
+
+type RequestPermissionResult struct {
+	Outcome PermissionOutcome `json:"outcome"`
+}
+
+// PermissionOutcome names the answer, and the option it selected when it selected
+// one: a cancelled outcome carries no option.
+type PermissionOutcome struct {
+	Outcome  string `json:"outcome"`
+	OptionID string `json:"optionId,omitempty"`
 }

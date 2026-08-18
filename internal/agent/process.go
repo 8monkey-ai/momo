@@ -176,15 +176,43 @@ func (p *process) prompt(ctx context.Context, sessionID string, content []core.C
 	return p.collected, nil
 }
 
-// handler answers what the agent sends momo: the chunks of its message, and
-// method-not-found for everything momo does not serve.
+// handler answers what the agent sends momo: the chunks of its message, the
+// permission a tool call asks for, and method-not-found for everything momo does
+// not serve.
 func (p *process) handler() jsonrpc2.Handler {
 	return jsonrpc2.HandlerWithError(func(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
-		if req.Method == wire.MethodUpdate {
+		switch req.Method {
+		case wire.MethodUpdate:
 			return nil, p.update(req)
+		case wire.MethodRequestPermission:
+			return permission(req)
+		default:
+			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: req.Method + " is not supported"}
 		}
-		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: req.Method + " is not supported"}
 	})
+}
+
+// permission allows what the turn needs. Nobody is at the conversation to ask,
+// and an unanswered request stops the turn, so momo selects the first option that
+// lets the action happen. A request that offers no such option is cancelled,
+// which v1 reads as "nothing was selected" and not as a refusal.
+func permission(req *jsonrpc2.Request) (any, error) {
+	if req.Params == nil {
+		return nil, errors.New("session/request_permission requires params")
+	}
+	var params wire.RequestPermissionParams
+	if err := json.Unmarshal(*req.Params, &params); err != nil {
+		return nil, err
+	}
+	for _, option := range params.Options {
+		if option.Kind == wire.PermissionAllowOnce || option.Kind == wire.PermissionAllowAlways {
+			return wire.RequestPermissionResult{Outcome: wire.PermissionOutcome{
+				Outcome:  wire.OutcomeSelected,
+				OptionID: option.OptionID,
+			}}, nil
+		}
+	}
+	return wire.RequestPermissionResult{Outcome: wire.PermissionOutcome{Outcome: wire.OutcomeCancelled}}, nil
 }
 
 func (p *process) update(req *jsonrpc2.Request) error {

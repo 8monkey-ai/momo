@@ -243,6 +243,11 @@ One message is one turn:
 6. momo interrupts the agent, waits up to five seconds for it to store its session, and
    then stops it.
 
+An agent that asks `session/request_permission` in the middle of a turn gets the first
+option that allows the action, `allow_once` or `allow_always`. Nobody is at the conversation
+to ask, and a request nobody answers stops the turn, so momo allows what the turn needs.
+A request that offers no allowing option is answered with no selection.
+
 One turn runs at a time for each conversation, and one conversation is one contact on one
 channel. A second message for that conversation waits for the turn in progress. A message
 for another conversation does not wait, and the same contact id on two channels is two

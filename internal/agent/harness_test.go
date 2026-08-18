@@ -252,6 +252,38 @@ func TestAnAgentWithoutSessionCapabilitiesGetsANewSession(t *testing.T) {
 	})
 }
 
+// TestATurnAnswersThePermissionRequestAndStillReplies pins what momo does with a
+// request it can answer nobody with: it selects an option that allows the action,
+// and the turn produces its reply. The stub offers a refusing option first, so
+// selecting the first option of the list is not enough to pass.
+func TestATurnAnswersThePermissionRequestAndStillReplies(t *testing.T) {
+	for name, offered := range map[string]struct{ options, want string }{
+		"an allowing option": {options: "all", want: "session/request_permission\tselected\tallow-once"},
+		"only refusals":      {options: "refusals", want: "session/request_permission\tcancelled\t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("STUBAGENT_PERMISSION", offered.options)
+			path := filepath.Join(t.TempDir(), "trace")
+			t.Setenv("STUBAGENT_TRACE", path)
+			h, _ := harness(t)
+			content, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")})
+			if err != nil {
+				t.Fatalf("Turn: %v", err)
+			}
+			if len(content) != 2 || content[0].Text != "hello from" {
+				t.Fatalf("content = %+v, want the stub agent's reply", content)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("the stub agent wrote no trace: %v", err)
+			}
+			if !strings.Contains(string(raw), offered.want) {
+				t.Fatalf("trace =\n%s\nwant a line %q", raw, offered.want)
+			}
+		})
+	}
+}
+
 func TestNewRefusesAnUnusableConfiguration(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
