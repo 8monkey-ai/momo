@@ -22,22 +22,22 @@ import (
 // run performs the turn on a subprocess of its own: initialize, the
 // conversation's session in its directory, and the prompt. Nothing is tried a
 // second time.
-func (h *Harness) run(ctx context.Context, dir string, prompt []core.ContentBlock) ([]core.ContentBlock, error) {
+func (h *Harness) run(ctx context.Context, dir string, prompt []core.ContentBlock, emit core.Emit) error {
 	p, err := h.start(ctx, dir)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// Every exit of the turn, an error included, stops the subprocess.
 	defer p.stop()
 	capabilities, err := p.initialize(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	sessionID, err := p.session(ctx, dir, capabilities)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return p.prompt(ctx, sessionID, prompt)
+	return p.prompt(ctx, sessionID, prompt, emit)
 }
 
 // process is one agent subprocess and the ACP connection to it.
@@ -49,9 +49,13 @@ type process struct {
 	// turn's deadline cannot kill the agent before momo has stopped it.
 	end context.CancelFunc
 
-	mu         sync.Mutex
-	collecting bool
-	collected  []core.ContentBlock
+	// mu guards emit, which the prompt installs and the connection's handler
+	// goroutine reads. emit is called with the mutex released: it belongs to the
+	// core and momo holds no lock across it.
+	mu   sync.Mutex
+	emit core.Emit
+	// failed is the error an earlier emit reported, which ends the turn.
+	failed error
 }
 
 func (h *Harness) start(ctx context.Context, dir string) (*process, error) {
@@ -160,20 +164,20 @@ func (p *process) newSession(ctx context.Context, dir string) (string, error) {
 	return res.SessionID, nil
 }
 
-// prompt collects the streamed content from the prompt onwards, so content the
+// prompt reports the streamed content from the prompt onwards, so content the
 // agent streamed while momo prepared the session is not in this turn's reply.
-func (p *process) prompt(ctx context.Context, sessionID string, content []core.ContentBlock) ([]core.ContentBlock, error) {
+func (p *process) prompt(ctx context.Context, sessionID string, content []core.ContentBlock, emit core.Emit) error {
 	p.mu.Lock()
-	p.collecting = true
+	p.emit = emit
 	p.mu.Unlock()
 	var res wire.PromptResult
 	params := wire.PromptParams{SessionID: sessionID, Prompt: content}
 	if err := p.conn.Call(ctx, wire.MethodPrompt, params, &res); err != nil {
-		return nil, fmt.Errorf("session/prompt: %w", err)
+		return fmt.Errorf("session/prompt: %w", err)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.collected, nil
+	return p.failed
 }
 
 // handler answers what the agent sends momo: the chunks of its message, the
@@ -227,11 +231,21 @@ func (p *process) update(req *jsonrpc2.Request) error {
 		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.collecting {
+	emit := p.emit
+	p.mu.Unlock()
+	if emit == nil {
 		return nil
 	}
-	p.collected = append(p.collected, params.Update.Content)
+	// ponytail: the agent keeps generating until the prompt is answered, and only
+	// then does the turn report the failure. PR 5's session/cancel stops it at the
+	// chunk that failed.
+	if err := emit([]core.ContentBlock{params.Update.Content}); err != nil {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.failed == nil {
+			p.failed = err
+		}
+	}
 	return nil
 }
 

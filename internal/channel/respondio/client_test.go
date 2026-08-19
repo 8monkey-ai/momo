@@ -15,27 +15,31 @@ import (
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
+// instant is the pacing the tests deliver with: no pause, so no test waits for
+// one, and a blank line closes a paragraph.
+func instant() core.Pacing { return core.Pacing{MaxDelay: time.Minute, Separator: "\n\n"} }
+
 // echoAgent answers with the content the message carried, so a test drives the
 // reply path with no agent subprocess.
 type echoAgent struct{}
 
-func (echoAgent) Turn(_ context.Context, m core.Message) ([]core.ContentBlock, error) {
-	return m.Content, nil
+func (echoAgent) Turn(_ context.Context, m core.Message, emit core.Emit) error {
+	return emit(m.Content)
 }
 
 func echoHandler() core.Handler {
-	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
+	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{}, instant())
 }
 
 // failingAgent stands for an agent that exits before it replies.
 type failingAgent struct{}
 
-func (failingAgent) Turn(context.Context, core.Message) ([]core.ContentBlock, error) {
-	return nil, errors.New("the agent exited before it replied")
+func (failingAgent) Turn(context.Context, core.Message, core.Emit) error {
+	return errors.New("the agent exited before it replied")
 }
 
 func failingHandler() core.Handler {
-	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{})
+	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{}, instant())
 }
 
 // api is a stand-in for respond.io's REST API, recording what reached it.

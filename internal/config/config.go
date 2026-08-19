@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/8monkey-ai/momo/internal/channel"
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 // Config is the configuration momo runs with. The channel blocks and the agent
@@ -23,6 +24,7 @@ type Config struct {
 	ReadTimeout       time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+	Delivery          core.Pacing
 	Channels          map[string]channel.Decoder
 	Agent             func(any) error
 }
@@ -34,8 +36,17 @@ type file struct {
 	ReadTimeout       *time.Duration       `yaml:"read_timeout"`
 	IdleTimeout       *time.Duration       `yaml:"idle_timeout"`
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
+	Delivery          delivery             `yaml:"delivery"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
 	Agent             yaml.Node            `yaml:"agent"`
+}
+
+// delivery is the pacing block. The durations are pointers so that an absent
+// setting takes its default and a value the operator set is checked.
+type delivery struct {
+	DelayPerWord *time.Duration `yaml:"delay_per_word"`
+	MaxDelay     *time.Duration `yaml:"max_delay"`
+	Separator    *string        `yaml:"separator"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -62,6 +73,10 @@ func parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&rest); !errors.Is(err, io.EOF) {
 		return nil, errors.New("invalid configuration: unexpected content after the first YAML document")
 	}
+	pace, err := pacing(f.Delivery)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		Listen:            f.Listen,
 		MaxConnections:    f.MaxConnections,
@@ -71,6 +86,7 @@ func parse(raw []byte) (*Config, error) {
 		ReadTimeout:     duration(f.ReadTimeout, 30*time.Second),
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
+		Delivery:        pace,
 		Channels:        map[string]channel.Decoder{},
 		Agent:           decoderFor(f.Agent),
 	}
@@ -88,6 +104,30 @@ func parse(raw []byte) (*Config, error) {
 		cfg.Channels[name] = decoderFor(node)
 	}
 	return cfg, nil
+}
+
+// pacing reads the delivery block. A pause momo cannot wait and a separator that
+// would close a paragraph at every character are refused before the process
+// serves anything.
+func pacing(d delivery) (core.Pacing, error) {
+	p := core.Pacing{
+		DelayPerWord: duration(d.DelayPerWord, time.Second),
+		MaxDelay:     duration(d.MaxDelay, 10*time.Minute),
+		Separator:    "\n\n",
+	}
+	if p.DelayPerWord < 0 {
+		return core.Pacing{}, errors.New("invalid configuration: delivery.delay_per_word cannot be negative")
+	}
+	if p.MaxDelay <= 0 {
+		return core.Pacing{}, errors.New("invalid configuration: delivery.max_delay must be positive")
+	}
+	if d.Separator != nil {
+		if *d.Separator == "" {
+			return core.Pacing{}, errors.New("invalid configuration: delivery.separator cannot be empty")
+		}
+		p.Separator = *d.Separator
+	}
+	return p, nil
 }
 
 func duration(set *time.Duration, fallback time.Duration) time.Duration {

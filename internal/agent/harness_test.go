@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -62,23 +64,48 @@ func harness(t *testing.T) (*Harness, string) {
 	return h, root
 }
 
-func TestTurnAnswersWithTheContentTheAgentStreamed(t *testing.T) {
-	h, _ := harness(t)
-	content, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")})
-	if err != nil {
+// collector is the emit every turn in this package runs with: it records the
+// content of each call, so a test states what the agent streamed as literals.
+type collector struct {
+	mu    sync.Mutex
+	calls [][]core.ContentBlock
+}
+
+func (c *collector) emit(content []core.ContentBlock) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, content)
+	return nil
+}
+
+func (c *collector) recorded() [][]core.ContentBlock {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// turn runs one turn and answers what the agent streamed.
+func turn(t *testing.T, h *Harness, conversation string) [][]core.ContentBlock {
+	t.Helper()
+	var c collector
+	if err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")}, c.emit); err != nil {
 		t.Fatalf("Turn: %v", err)
 	}
-	want := []core.ContentBlock{
-		{Type: "text", Text: "hello from"},
-		{Type: "text", Text: "the stub agent"},
+	return c.recorded()
+}
+
+// TestTurnReportsEachChunkAsItArrives pins that a turn no longer answers with one
+// collected reply: the two chunks the stub sends reach the core as two emit calls,
+// before Turn returns.
+func TestTurnReportsEachChunkAsItArrives(t *testing.T) {
+	h, _ := harness(t)
+	got := turn(t, h, "respondio:1")
+	want := [][]core.ContentBlock{
+		{{Type: "text", Text: "hello from\n\n"}},
+		{{Type: "text", Text: "the stub agent"}},
 	}
-	if len(content) != len(want) {
-		t.Fatalf("content = %+v, want %+v", content, want)
-	}
-	for i, block := range content {
-		if block != want[i] {
-			t.Fatalf("content[%d] = %+v, want %+v", i, block, want[i])
-		}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("emit calls = %+v, want %+v", got, want)
 	}
 }
 
@@ -86,9 +113,7 @@ func TestTheSubprocessIsGoneAfterTheTurn(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	t.Setenv("STUBAGENT_PID_FILE", pidFile)
 	h, _ := harness(t)
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	raw, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("the stub agent reported no pid: %v", err)
@@ -108,9 +133,7 @@ func TestTheSubprocessIsGoneAfterTheTurn(t *testing.T) {
 
 func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 	h, root := harness(t)
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	entries, err := os.ReadDir(filepath.Join(root, dirName("respondio:1")))
 	if err != nil {
 		t.Fatalf("the conversation directory is missing: %v", err)
@@ -135,8 +158,8 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 	failed := make(chan error, 2)
 	for _, conversation := range []string{"respondio:1", "respondio:2"} {
 		go func() {
-			_, err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")})
-			failed <- err
+			var c collector
+			failed <- h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")}, c.emit)
 		}()
 	}
 
@@ -175,9 +198,7 @@ func TestTheSessionWorksInAnAbsoluteDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	cwd, err := os.ReadFile(cwdFile)
 	if err != nil {
 		t.Fatalf("the stub agent reported no cwd: %v", err)
@@ -196,9 +217,7 @@ func sessionTrace(t *testing.T, conversations ...string) ([]string, string) {
 	t.Setenv("STUBAGENT_TRACE", path)
 	h, root := harness(t)
 	for _, conversation := range conversations {
-		if _, err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")}); err != nil {
-			t.Fatalf("Turn: %v", err)
-		}
+		turn(t, h, conversation)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -266,12 +285,9 @@ func TestATurnAnswersThePermissionRequestAndStillReplies(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "trace")
 			t.Setenv("STUBAGENT_TRACE", path)
 			h, _ := harness(t)
-			content, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")})
-			if err != nil {
-				t.Fatalf("Turn: %v", err)
-			}
-			if len(content) != 2 || content[0].Text != "hello from" {
-				t.Fatalf("content = %+v, want the stub agent's reply", content)
+			got := turn(t, h, "respondio:1")
+			if len(got) != 2 || got[0][0].Text != "hello from\n\n" {
+				t.Fatalf("emit calls = %+v, want the stub agent's reply", got)
 			}
 			raw, err := os.ReadFile(path)
 			if err != nil {

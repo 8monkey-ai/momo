@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,6 +98,54 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parse([]byte(tc.body)); err == nil {
 				t.Fatal("parse succeeded, want an error the operator can act on")
+			}
+		})
+	}
+}
+
+func TestDeliveryTakesDefaultsWhenTheBlockIsAbsent(t *testing.T) {
+	cfg := load(t, "")
+	if cfg.Delivery.DelayPerWord != time.Second {
+		t.Errorf("delay_per_word = %v, want the default 1s", cfg.Delivery.DelayPerWord)
+	}
+	if cfg.Delivery.MaxDelay != 10*time.Minute {
+		t.Errorf("max_delay = %v, want the default 10m", cfg.Delivery.MaxDelay)
+	}
+	if cfg.Delivery.Separator != "\n\n" {
+		t.Errorf("separator = %q, want the default \"\\n\\n\"", cfg.Delivery.Separator)
+	}
+}
+
+func TestDeliveryReadsTheBlock(t *testing.T) {
+	cfg := load(t, "delivery:\n  delay_per_word: 0s\n  max_delay: 5s\n  separator: \"---\"\n")
+	if cfg.Delivery.DelayPerWord != 0 {
+		t.Errorf("delay_per_word = %v, want 0s", cfg.Delivery.DelayPerWord)
+	}
+	if cfg.Delivery.MaxDelay != 5*time.Second {
+		t.Errorf("max_delay = %v, want 5s", cfg.Delivery.MaxDelay)
+	}
+	if cfg.Delivery.Separator != "---" {
+		t.Errorf("separator = %q, want \"---\"", cfg.Delivery.Separator)
+	}
+}
+
+func TestRejectsAnUnusableDeliveryBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "negative delay_per_word", body: "delivery:\n  delay_per_word: -1s\n"},
+		{name: "max_delay of zero", body: "delivery:\n  max_delay: 0s\n"},
+		{name: "negative max_delay", body: "delivery:\n  max_delay: -1s\n"},
+		{name: "empty separator", body: "delivery:\n  separator: \"\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse([]byte(tc.body))
+			if err == nil {
+				t.Fatal("parse succeeded, want an error naming the setting")
+			}
+			if !strings.Contains(err.Error(), "delivery.") {
+				t.Fatalf("error %q does not name the setting", err)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	wire "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
@@ -147,7 +149,7 @@ func TestAPromptWhoseStreamIsGoneStillCompletes(t *testing.T) {
 
 func TestAFailedTurnAnswersThePromptWithAnError(t *testing.T) {
 	h := unserved()
-	h.serve(t, core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{}))
+	h.serve(t, core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{}, instant()))
 	connID, sessionID, connStream, sessionStream := h.session(t)
 
 	h.prompt(t, connID, sessionID, `{"type":"text","text":"hello"}`)
@@ -174,5 +176,57 @@ func TestReplyReportsAnUndeliveredNotification(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), sessionID) {
 		t.Fatalf("error %q does not name the session", err)
+	}
+}
+
+// TestEveryReplyCallIsOneMessage pins what a client needs to see the pacing: the
+// blocks of one call share a message id, and the next call carries a new one, so
+// a paced paragraph is a message of its own and not more text in the last one.
+func TestEveryReplyCallIsOneMessage(t *testing.T) {
+	h := unserved()
+	e := &endpoint{token: token, conns: h.conns, core: h.core}
+	connID := h.conns.newConnection()
+	sessionID, _ := h.conns.newSession(connID)
+	s, listening := h.conns.listen(connID, sessionID)
+	if !listening {
+		t.Fatal("the session took no listener")
+	}
+	reply := e.reply(connID, sessionID)
+
+	first := []core.ContentBlock{
+		{Type: "text", Text: "a paragraph"},
+		{Type: "image", Data: "AAAA", MimeType: "image/png"},
+	}
+	if err := reply(context.Background(), first); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if err := reply(context.Background(), core.Text("the next paragraph")); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	one, two, three := messageID(t, s), messageID(t, s), messageID(t, s)
+	if one == "" {
+		t.Fatal("the notification carries no messageId")
+	}
+	if one != two {
+		t.Fatalf("messageId = %q and %q, want one id for the blocks of one call", one, two)
+	}
+	if three == one {
+		t.Fatalf("messageId = %q for both calls, want a new id for the second message", three)
+	}
+}
+
+func messageID(t *testing.T, s *stream) string {
+	t.Helper()
+	select {
+	case raw := <-s.frames:
+		var n notification
+		if err := json.Unmarshal(bytes.TrimPrefix(raw, []byte("data: ")), &n); err != nil {
+			t.Fatalf("frame %s: %v", raw, err)
+		}
+		return n.Params.Update.MessageID
+	case <-time.After(2 * time.Second):
+		t.Fatal("no notification arrived on the stream")
+		return ""
 	}
 }

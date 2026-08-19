@@ -129,10 +129,10 @@ func buildStub(t *testing.T) string {
 }
 
 // TestAMessageOnRespondioIsAnsweredByTheAgent drives the whole path: a signed
-// webhook arrives, the agent subprocess runs the turn, and the content it
-// streamed leaves as one send-a-message call.
+// webhook arrives, the agent subprocess runs the turn, and each paragraph it
+// streamed leaves as its own send-a-message call.
 func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
-	sent := make(chan string, 1)
+	sent := make(chan string, 2)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -144,7 +144,7 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 	}))
 	defer api.Close()
 
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\ndelivery:\n  delay_per_word: 0s\n"+agentBlock(t, buildStub(t))+
 		fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n", api.URL))
 	l, err := listen(cfg)
 	if err != nil {
@@ -172,14 +172,19 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 		t.Fatalf("webhook = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	select {
-	case call := <-sent:
-		want := `/contact/id:123/message {"message":{"text":"hello from the stub agent","type":"text"}}`
-		if call != want {
-			t.Fatalf("respond.io received %s, want %s", call, want)
+	// The stub's reply is two paragraphs, so it leaves as two messages, in order.
+	for _, want := range []string{
+		`/contact/id:123/message {"message":{"text":"hello from","type":"text"}}`,
+		`/contact/id:123/message {"message":{"text":"the stub agent","type":"text"}}`,
+	} {
+		select {
+		case call := <-sent:
+			if call != want {
+				t.Fatalf("respond.io received %s, want %s", call, want)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("no reply reached respond.io")
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no reply reached respond.io")
 	}
 }
 

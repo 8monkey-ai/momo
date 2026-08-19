@@ -74,19 +74,19 @@ func New(log *slog.Logger, decode func(any) error) (*Harness, error) {
 // Turn runs one turn of one conversation. The timeout bounds everything the turn
 // does, the wait for the conversation included, so a message behind a stopped
 // turn is released as well.
-func (h *Harness) Turn(ctx context.Context, m core.Message) ([]core.ContentBlock, error) {
+func (h *Harness) Turn(ctx context.Context, m core.Message, emit core.Emit) error {
 	ctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
 	release, err := h.acquire(ctx, m.Conversation)
 	if err != nil {
-		return nil, fmt.Errorf("waiting for the conversation: %w", err)
+		return fmt.Errorf("waiting for the conversation: %w", err)
 	}
 	defer release()
 	dir := filepath.Join(h.dataDir, dirName(m.Conversation))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return err
 	}
-	return h.run(ctx, dir, m.Content)
+	return h.run(ctx, dir, m.Content, emit)
 }
 
 // acquire holds the conversation for one turn. Each conversation has a channel of

@@ -71,34 +71,46 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
-// Agent runs one turn of one conversation: the message goes in, and the complete
-// reply comes out. The implementation is outside the core, so the core carries no
-// protocol and no process.
+// Emit delivers one part of a turn's reply. The agent calls it as the content
+// arrives. It does not block and returns the error of an earlier part, so an
+// agent talking to a broken channel stops generating.
+type Emit func(content []ContentBlock) error
+
+// Agent runs one turn of one conversation: the message goes in, and the reply
+// comes out part by part, while the turn runs. The implementation is outside the
+// core, so the core carries no protocol and no process.
 type Agent interface {
-	Turn(ctx context.Context, m Message) ([]ContentBlock, error)
+	Turn(ctx context.Context, m Message, emit Emit) error
 }
 
 // NewHandler answers each incoming message with the reply of one agent turn, on
-// the channel the message arrived on.
-func NewHandler(log *slog.Logger, a Agent) Handler {
-	return handler{log: log, agent: a}
+// the channel the message arrived on, one paragraph per message at the
+// configured pace.
+func NewHandler(log *slog.Logger, a Agent, pacing Pacing) Handler {
+	return handler{log: log, agent: a, pacing: pacing}
 }
 
 type handler struct {
-	log   *slog.Logger
-	agent Agent
+	log    *slog.Logger
+	agent  Agent
+	pacing Pacing
 }
 
+// Received returns once the last paragraph has been delivered, so the channel
+// reports a failed turn on its own transport and an ACP client reads every
+// update before the response.
 func (h handler) Received(ctx context.Context, m Message, reply Reply) error {
 	h.log.Info("message received", attrs(m)...)
-	content, err := h.agent.Turn(ctx, m)
-	if err != nil {
-		h.log.Error("turn failed", "conversation", m.Conversation, "error", err)
-		return fmt.Errorf("turn: %w", err)
+	d := newDelivery(ctx, h.pacing, reply)
+	turn := h.agent.Turn(ctx, m, d.emit)
+	delivered := d.close()
+	if turn != nil {
+		h.log.Error("turn failed", "conversation", m.Conversation, "error", turn)
+		return fmt.Errorf("turn: %w", turn)
 	}
-	if err := reply(ctx, content); err != nil {
-		h.log.Error("reply failed", "conversation", m.Conversation, "error", err)
-		return fmt.Errorf("reply: %w", err)
+	if delivered != nil {
+		h.log.Error("reply failed", "conversation", m.Conversation, "error", delivered)
+		return fmt.Errorf("reply: %w", delivered)
 	}
 	return nil
 }

@@ -125,8 +125,12 @@ type UpdateParams struct {
 }
 
 type Update struct {
-	SessionUpdate string            `json:"sessionUpdate"`
-	Content       core.ContentBlock `json:"content"`
+	SessionUpdate string `json:"sessionUpdate"`
+	// MessageID joins the chunks of one message: chunks that share it are one
+	// message, and a changed id starts a new one. v1 makes it optional, so it is
+	// omitted when the sender has none.
+	MessageID string            `json:"messageId,omitempty"`
+	Content   core.ContentBlock `json:"content"`
 }
 
 // RequestPermissionParams offers the options one tool call may be answered with.

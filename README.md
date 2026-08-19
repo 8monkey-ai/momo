@@ -78,6 +78,19 @@ idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
 
+# How a reply reaches the contact: momo splits it into paragraphs and pauses
+# before each one, so it arrives at a human pace.
+delivery:
+  # Pause before a paragraph, per word it holds. "0s" sends with no pause.
+  # Cannot be negative. Default: "1s"
+  delay_per_word: "1s"
+  # Longest pause before one paragraph, whatever its length. Must be positive.
+  # Default: "10m"
+  max_delay: "10m"
+  # Text that closes a paragraph. Cannot be empty. YAML needs the double quotes
+  # for the escape. Default: "\n\n" (a blank line)
+  separator: "\n\n"
+
 # Agent momo runs each turn on. Required.
 agent:
   # Command momo starts, as a list: the program and its arguments. The program
@@ -174,8 +187,9 @@ Both webhooks may also deliver event types momo does not act on, such as contact
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
 
-momo answers an incoming message with one call to respond.io's send-a-message API,
-`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
+momo answers an incoming message with one call to respond.io's send-a-message API per
+paragraph of the reply, `POST {api_url}/contact/id:{contact}/message`, authenticated with
+`api_token`. Outgoing
 messages (`message.sent`) are recorded only: they include momo's own replies, and
 answering them would make momo talk to itself.
 
@@ -210,9 +224,11 @@ The client connects like this:
    the response arrive on that session's stream.
 
 momo answers a prompt on the session's own stream: one `session/update` notification per
-content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
-response with `stopReason: "end_turn"`, always after the content it is ending. A turn that
-fails is answered with an error in place of that response.
+paragraph of the reply, each carrying a single `agent_message_chunk` with a `messageId` of
+its own, so a client that joins chunks by id reads one paragraph as one message. The
+`session/prompt` response with `stopReason: "end_turn"` follows the last of them, always
+after the content it is ending. A turn that fails is answered with an error in place of that
+response.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
@@ -239,10 +255,17 @@ One message is one turn:
 2. momo sends `initialize`, and the agent answers with protocol version 1.
 3. momo continues the conversation's session on that directory, or opens one when the
    conversation has none, and sends the message as the prompt.
-4. The agent streams its answer, and momo collects it.
-5. momo sends the collected answer as one message on the channel the message arrived on.
+4. The agent streams its answer, one chunk at a time.
+5. momo sends each paragraph of that answer as its own message on the channel the message
+   arrived on, while the turn is still running.
 6. momo interrupts the agent, waits up to five seconds for it to store its session, and
    then stops it.
+
+A paragraph ends where the agent's text holds `separator`, a blank line by default. Before
+a paragraph is sent, momo waits `delay_per_word` for each word the paragraph holds, up to
+`max_delay`. The wait never holds up the agent: it keeps generating while the paragraphs
+queue up behind the pause. A send that fails ends the turn's delivery, so the paragraphs
+still queued are dropped and the turn is reported as failed.
 
 An agent that asks `session/request_permission` in the middle of a turn gets the first
 option that allows the action, `allow_once` or `allow_always`. Nobody is at the conversation
