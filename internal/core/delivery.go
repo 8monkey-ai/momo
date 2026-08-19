@@ -76,7 +76,9 @@ func (d delivering) Sent(ctx context.Context, m Message) { d.handler.Sent(ctx, m
 // comes from that single consumer. A paragraph's pause does not block the agent,
 // which is still generating the rest of the reply.
 type queue struct {
-	ctx      context.Context
+	// send outlives the turn's context, so a turn that was stopped still delivers
+	// what it generated instead of failing every remaining send.
+	send     context.Context
 	delivery Delivery
 	reply    Reply
 	// signal wakes the consumer. Capacity one is enough: it says that the queue
@@ -95,7 +97,7 @@ type queue struct {
 
 func start(ctx context.Context, d Delivery, reply Reply) *queue {
 	q := &queue{
-		ctx:      ctx,
+		send:     context.WithoutCancel(ctx),
 		delivery: d,
 		reply:    reply,
 		signal:   make(chan struct{}, 1),
@@ -170,21 +172,14 @@ func (q *queue) run(last time.Time) {
 	for {
 		content, pending := q.next()
 		if pending {
-			select {
-			case <-q.signal:
-				continue
-			case <-q.ctx.Done():
-				q.fail(q.ctx.Err())
-				return
-			}
+			<-q.signal
+			continue
 		}
 		if content == nil {
 			return
 		}
-		if !q.wait(pause(TextOf(content), q.delivery, time.Since(last))) {
-			return
-		}
-		if err := q.reply(q.ctx, content); err != nil {
+		time.Sleep(pause(TextOf(content), q.delivery, time.Since(last)))
+		if err := q.reply(q.send, content); err != nil {
 			q.fail(err)
 			return
 		}
@@ -207,31 +202,9 @@ func (q *queue) next() (content []ContentBlock, pending bool) {
 	return content, false
 }
 
-// wait holds a paragraph back for its pause. It answers false when the turn was
-// cancelled, before the pause or during it, and nothing is sent after that.
-func (q *queue) wait(pause time.Duration) bool {
-	select {
-	case <-q.ctx.Done():
-		q.fail(q.ctx.Err())
-		return false
-	default:
-	}
-	if pause <= 0 {
-		return true
-	}
-	timer := time.NewTimer(pause)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return true
-	case <-q.ctx.Done():
-		q.fail(q.ctx.Err())
-		return false
-	}
-}
-
 // fail ends the turn's delivery: what is queued is dropped, and every later
-// accept answers with this error.
+// accept answers with this error. Only a failed Reply ends a delivery, because
+// the transport that would carry the rest is the one that just failed.
 func (q *queue) fail(err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

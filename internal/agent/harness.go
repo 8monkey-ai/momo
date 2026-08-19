@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/8monkey-ai/momo/internal/core"
@@ -28,9 +27,6 @@ type Harness struct {
 	command []string
 	dataDir string
 	timeout time.Duration
-
-	mu    sync.Mutex
-	turns map[string]chan struct{}
 }
 
 // New reads the agent block and refuses a configuration momo cannot serve with,
@@ -67,46 +63,17 @@ func New(log *slog.Logger, decode func(any) error) (*Harness, error) {
 		command: s.Command,
 		dataDir: dataDir,
 		timeout: timeout,
-		turns:   map[string]chan struct{}{},
 	}, nil
 }
 
 // Turn runs one turn of one conversation. The timeout bounds everything the turn
-// does, the wait for the conversation included, so a message behind a stopped
-// turn is released as well.
+// does.
 func (h *Harness) Turn(ctx context.Context, m core.Message, emit core.Emit) error {
 	ctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
-	release, err := h.acquire(ctx, m.Conversation)
-	if err != nil {
-		return fmt.Errorf("waiting for the conversation: %w", err)
-	}
-	defer release()
 	dir := filepath.Join(h.dataDir, dirName(m.Conversation))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return h.run(ctx, dir, m.Content, emit)
-}
-
-// acquire holds the conversation for one turn. Each conversation has a channel of
-// capacity one, so turns of different conversations never wait for each other.
-//
-// ponytail: the map keeps one entry for each conversation it has ever seen, so it
-// grows with the contact base. PR 5's actor for each contact, with a FIFO inbox,
-// replaces this lock and its map.
-func (h *Harness) acquire(ctx context.Context, conversation string) (func(), error) {
-	h.mu.Lock()
-	turn, known := h.turns[conversation]
-	if !known {
-		turn = make(chan struct{}, 1)
-		h.turns[conversation] = turn
-	}
-	h.mu.Unlock()
-	select {
-	case turn <- struct{}{}:
-		return func() { <-turn }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }

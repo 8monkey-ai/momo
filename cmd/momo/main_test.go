@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,7 +175,7 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 			defer stop()
 			go func() { _ = serve(ctx, discard(), cfg, l) }()
 
-			post(t, l.Addr().String())
+			post(t, l.Addr().String(), "hi")
 
 			for _, want := range tc.want {
 				select {
@@ -195,10 +196,125 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 	}
 }
 
-// post delivers one signed message.received webhook.
-func post(t *testing.T, address string) {
+// logs is a log destination a test polls, so a test observes what momo reports
+// while it serves.
+type logs struct {
+	mu     sync.Mutex
+	writer strings.Builder
+}
+
+func (l *logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.writer.Write(p)
+}
+
+func (l *logs) await(t *testing.T, line string) {
 	t.Helper()
-	event := `{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":"hi"}}}`
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		l.mu.Lock()
+		written := l.writer.String()
+		l.mu.Unlock()
+		if strings.Contains(written, line) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("momo never reported %q, it reported:\n%s", line, written)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestMessagesArrivingDuringATurnBecomeOnePrompt drives the whole path: the stub
+// agent holds the first turn until two more webhooks have arrived, and the two
+// reach it together as the prompt of one further turn.
+func TestMessagesArrivingDuringATurnBecomeOnePrompt(t *testing.T) {
+	gate, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gate.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", gate.Addr().String())
+	prompts := filepath.Join(t.TempDir(), "prompts")
+	t.Setenv("STUBAGENT_PROMPT_FILE", prompts)
+
+	sent := make(chan string, 4)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the API call: %v", err)
+			return
+		}
+		sent <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
+		fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n", api.URL))
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	reported := &logs{}
+	go func() { _ = serve(ctx, slog.New(slog.NewTextHandler(reported, nil)), cfg, l) }()
+
+	post(t, l.Addr().String(), "first")
+	first := heldPrompt(t, gate)
+	for _, text := range []string{"second", "third"} {
+		post(t, l.Addr().String(), text)
+		reported.await(t, "text="+text)
+	}
+	reported.await(t, "message joined the pending batch")
+
+	release(t, first)
+	release(t, heldPrompt(t, gate))
+	for range 2 {
+		select {
+		case <-sent:
+		case <-time.After(30 * time.Second):
+			t.Fatal("a reply never reached respond.io")
+		}
+	}
+
+	raw, err := os.ReadFile(prompts)
+	if err != nil {
+		t.Fatalf("the stub agent recorded no prompt: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(got) != 2 || got[0] != "first" || got[1] != "second+third" {
+		t.Fatalf("the agent was prompted with %q, want [first second+third]", got)
+	}
+}
+
+// heldPrompt answers the connection of a prompt the stub agent holds.
+func heldPrompt(t *testing.T, l net.Listener) net.Conn {
+	t.Helper()
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	return conn
+}
+
+func release(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// post delivers one signed message.received webhook.
+func post(t *testing.T, address, text string) {
+	t.Helper()
+	event := fmt.Sprintf(`{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":%q}}}`, text)
 	mac := hmac.New(sha256.New, []byte("secret"))
 	mac.Write([]byte(event))
 	req, err := http.NewRequest(http.MethodPost, "http://"+address+"/respondio/received", strings.NewReader(event))

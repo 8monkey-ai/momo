@@ -269,7 +269,9 @@ has a five-second target, and an agent that took four seconds to write it adds o
 second. The pause does not block the agent, because momo delivers the messages
 while the turn continues. A message that cannot be sent ends
 the turn's delivery: the paragraphs still waiting are dropped, and the turn is
-reported as failed.
+reported as failed. A turn that was stopped for any other reason still delivers
+the paragraphs it already produced, so what the contact received and what the
+agent's session holds are the same.
 
 An agent that asks `session/request_permission` in the middle of a turn gets the first
 option that allows the action, `allow_once` or `allow_always`. Nobody is at the conversation
@@ -277,9 +279,14 @@ to ask, and a request nobody answers stops the turn, so momo allows what the tur
 A request that offers no allowing option is answered with no selection.
 
 One turn runs at a time for each conversation, and one conversation is one contact on one
-channel. A second message for that conversation waits for the turn in progress. A message
-for another conversation does not wait, and the same contact id on two channels is two
-conversations. A turn that reaches `turn_timeout` fails, and the subprocess is stopped.
+channel. A conversation is busy until the reply of its turn has been delivered in full, the
+paced pauses included. Messages that arrive while it is busy are sent together as the prompt
+of the next turn, in the order they arrived, so a contact who writes three lines gets one
+answer, and the agent starts a turn only after the contact has received everything it said
+before. A message for another conversation does not wait, and the same contact id on two
+channels is two conversations. A turn that reaches `turn_timeout` fails, the subprocess is
+stopped, and the paragraphs it already produced are still delivered; the messages waiting
+behind it are then sent.
 
 Each conversation gets one directory under `data_dir`, named after the channel and the
 contact. momo creates it empty, and the agent owns everything in it. momo keeps no storage
