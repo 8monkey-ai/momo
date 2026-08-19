@@ -6,6 +6,7 @@ package channel
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -82,8 +83,11 @@ type Instance struct {
 	Channel Channel
 }
 
-// Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Config, h core.Handler) ([]Instance, error) {
+// Build builds every configured channel, in a stable order. Every channel is
+// wrapped so that one turn of a conversation runs at a time, delivery included,
+// so no channel and no assembly can forget it. The key is the channel's own
+// conversation id, because a conversation is one channel and one contact.
+func Build(lifetime context.Context, log *slog.Logger, configs map[string]Config, h core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -94,7 +98,7 @@ func Build(lifetime context.Context, configs map[string]Config, h core.Handler) 
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}))
+		c, err := f(lifetime, configs[name].Settings, core.Serialize(log, delivery.Handler(qualifying{name: name, h: h})))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

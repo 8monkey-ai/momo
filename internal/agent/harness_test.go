@@ -153,8 +153,9 @@ func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 }
 
 // TestTurnsOfDifferentConversationsRunAtTheSameTime releases no prompt before
-// both prompts have arrived, so an implementation that serialises the two turns
-// fails by deadlock and not by a measurement of time.
+// both prompts have arrived, so a harness that holds a lock of its own fails by
+// deadlock and not by a measurement of time. The harness shares nothing between
+// two turns: two subprocesses, two sessions, and no state of its own.
 func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

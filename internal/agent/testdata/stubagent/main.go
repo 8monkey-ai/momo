@@ -30,6 +30,9 @@ type request struct {
 type params struct {
 	Cwd       string `json:"cwd"`
 	SessionID string `json:"sessionId"`
+	Prompt    []struct {
+		Text string `json:"text"`
+	} `json:"prompt"`
 }
 
 func main() {
@@ -196,11 +199,14 @@ func created(cwd string) ([]string, int, error) {
 }
 
 func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
-	if err := synchronise(); err != nil {
-		return err
-	}
 	var p params
 	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return err
+	}
+	if err := reportPrompt(p); err != nil {
+		return err
+	}
+	if err := synchronise(); err != nil {
 		return err
 	}
 	if err := requestPermission(dec, enc, p.SessionID); err != nil {
@@ -222,6 +228,26 @@ func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
 		return err
 	}
 	return lateChunk(enc, p.SessionID)
+}
+
+// reportPrompt appends the text blocks of one prompt as one line, so a test
+// states which messages reached the agent together.
+func reportPrompt(p params) error {
+	path := os.Getenv("STUBAGENT_PROMPT_FILE")
+	if path == "" {
+		return nil
+	}
+	texts := make([]string, 0, len(p.Prompt))
+	for _, block := range p.Prompt {
+		texts = append(texts, block.Text)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	_, err = fmt.Fprintln(f, strings.Join(texts, "+"))
+	return err
 }
 
 // lateChunk streams one chunk after the turn was answered, which v1 does not

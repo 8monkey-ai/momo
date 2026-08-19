@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +65,7 @@ func (r *recorder) awaitCount(t *testing.T, n int) {
 
 // deliver runs one turn of a generator through the delivery under test.
 func deliver(ctx context.Context, d Delivery, rec *recorder, g generator) error {
-	h := d.Handler(NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), g))
+	h := d.Handler(NewHandler(discard(), g))
 	return h.Received(ctx, Message{Conversation: "stub:1", Content: Text("hi")}, rec.reply)
 }
 
@@ -321,24 +319,44 @@ func TestAFailedReplyStopsTheDelivery(t *testing.T) {
 	}
 }
 
-func TestACancelledTurnDeliversNothingMore(t *testing.T) {
+// TestACancelledTurnStillDeliversWhatItQueued pins that everything the agent
+// generated reaches the contact: the session history of the agent and what the
+// contact received stay the same.
+func TestACancelledTurnStillDeliversWhatItQueued(t *testing.T) {
 	rec := &recorder{}
 	ctx, cancel := context.WithCancel(context.Background())
-	d := Delivery{Separator: "\n\n", WordsPerMinute: 1, MaxDelay: 10 * time.Minute}
+	d := Delivery{Separator: "\n\n", WordsPerMinute: 1200, MaxDelay: 10 * time.Minute}
 	g := generator(func(emit Emit) error {
-		if err := emit(Text("first\n\nsecond\n\n")); err != nil {
+		if err := emit(Text("a\n\nb\n\n")); err != nil {
 			return err
 		}
 		cancel()
-		return nil
+		return emit(Text("c\n\nd\n\n"))
 	})
 
-	err := deliver(ctx, d, rec, g)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Received = %v, want it to wrap %v", err, context.Canceled)
+	if err := deliver(ctx, d, rec, g); err != nil {
+		t.Fatalf("Received: %v", err)
 	}
-	if rec.count() > 1 {
-		t.Fatalf("delivered %q, want nothing after the cancellation", rec.texts())
+	want(t, rec, "a", "b", "c", "d")
+}
+
+func TestTheQueueSendsWithAContextThatIsNotCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var sent []error
+	reply := func(ctx context.Context, _ []ContentBlock) error {
+		sent = append(sent, ctx.Err())
+		return nil
+	}
+	h := paragraphs.Handler(NewHandler(discard(), generator(func(emit Emit) error {
+		cancel()
+		return emit(Text("one\n\n"))
+	})))
+
+	if err := h.Received(ctx, Message{Conversation: "stub:1", Content: Text("hi")}, reply); err != nil {
+		t.Fatalf("Received: %v", err)
+	}
+	if len(sent) != 1 || sent[0] != nil {
+		t.Fatalf("Reply saw %v, want one call with a context that is not cancelled", sent)
 	}
 }
 

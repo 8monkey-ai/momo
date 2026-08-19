@@ -111,7 +111,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a))
+	instances, err := channel.Build(lifetime, log, cfg.Channels, core.NewHandler(log, a))
 	if err != nil {
 		return err
 	}

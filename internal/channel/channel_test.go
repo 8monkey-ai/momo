@@ -5,8 +5,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 
 	"gopkg.in/yaml.v3"
 
@@ -14,6 +17,8 @@ import (
 )
 
 func noSettings(any) error { return nil }
+
+func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // configured answers the configuration of every named channel, with no settings
 // and no delivery block, the way an operator who names a channel and nothing else
@@ -62,7 +67,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 	Register("stub-b", stub("b"))
 	Register("stub-a", stub("a"))
 
-	got, err := Build(context.Background(), configured("stub-b", "stub-a"), nil)
+	got, err := Build(context.Background(), discard(), configured("stub-b", "stub-a"), nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -72,7 +77,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 }
 
 func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
-	if _, err := Build(context.Background(), configured("telegran"), nil); err == nil {
+	if _, err := Build(context.Background(), discard(), configured("telegran"), nil); err == nil {
 		t.Fatal("Build succeeded, want an error naming the unknown channel")
 	}
 }
@@ -82,7 +87,7 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 	broken := errors.New("missing signing key")
 	Register("stub-broken", func(context.Context, Decoder, core.Handler) (Channel, error) { return nil, broken })
 
-	_, err := Build(context.Background(), configured("stub-broken"), nil)
+	_, err := Build(context.Background(), discard(), configured("stub-broken"), nil)
 	if !errors.Is(err, broken) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
@@ -124,7 +129,7 @@ func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
 	Register("acp", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio", "acp"), got); err != nil {
+	if _, err := Build(context.Background(), discard(), configured("respondio", "acp"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 2 || got.received[0] != "acp:123" || got.received[1] != "respondio:123" {
@@ -137,7 +142,7 @@ func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
 	Register("respondio", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio"), got); err != nil {
+	if _, err := Build(context.Background(), discard(), configured("respondio"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.sent) != 1 || got.sent[0] != "respondio:123" {
@@ -151,7 +156,7 @@ func TestChannelLearnsThatTheTurnFailed(t *testing.T) {
 	Register("respondio", deliver("123", &failed))
 	turn := errors.New("the agent exited before it replied")
 
-	if _, err := Build(context.Background(), configured("respondio"), &recorder{err: turn}); err != nil {
+	if _, err := Build(context.Background(), discard(), configured("respondio"), &recorder{err: turn}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if !errors.Is(failed, turn) {
@@ -164,7 +169,7 @@ func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
 	Register("respondio", deliver("acp:123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio"), got); err != nil {
+	if _, err := Build(context.Background(), discard(), configured("respondio"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 1 || got.received[0] != "respondio:acp:123" {
@@ -205,7 +210,7 @@ func TestEachChannelDeliversWithItsOwnSettings(t *testing.T) {
 	}
 	h := core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), twoParagraphs{})
 
-	if _, err := Build(context.Background(), configs, h); err != nil {
+	if _, err := Build(context.Background(), discard(), configs, h); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(split) != 2 || split[0] != "first" || split[1] != "second" {
@@ -223,8 +228,110 @@ func TestBuildRefusesADeliveryItCannotPace(t *testing.T) {
 		"respondio": {Settings: noSettings, Delivery: yamlDecoder("words_per_minute: -1\n")},
 	}
 
-	_, err := Build(context.Background(), configs, nil)
+	_, err := Build(context.Background(), discard(), configs, nil)
 	if err == nil || !strings.Contains(err.Error(), "respondio") || !strings.Contains(err.Error(), "words_per_minute") {
 		t.Fatalf("Build error = %v, want it to name the channel and the setting", err)
 	}
+}
+
+// holding is a handler that holds every turn until the test releases it and
+// records the text of the prompt it was given.
+type holding struct {
+	entered chan struct{}
+	release chan struct{}
+
+	mu      sync.Mutex
+	prompts []string
+}
+
+func (h *holding) seen() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.prompts)
+}
+
+func (h *holding) Received(_ context.Context, m core.Message, _ core.Reply) error {
+	h.mu.Lock()
+	h.prompts = append(h.prompts, core.TextOf(m.Content))
+	h.mu.Unlock()
+	h.entered <- struct{}{}
+	<-h.release
+	return nil
+}
+
+func (h *holding) Sent(context.Context, core.Message) {}
+
+// captures records the handler a built channel was given, so a test drives it
+// the way that channel would, one goroutine per message.
+func captures(got *core.Handler) Factory {
+	return func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		*got = h
+		return fixed{}, nil
+	}
+}
+
+func arrive(h core.Handler, conversation, text string) <-chan error {
+	failed := make(chan error, 1)
+	go func() {
+		m := core.Message{Conversation: conversation, Content: core.Text(text)}
+		failed <- h.Received(context.Background(), m, nil)
+	}()
+	return failed
+}
+
+// TestTwoMessagesOfOneConversationAreOneMergedTurn pins that Build wraps the
+// channel: the second message reaches the handler as the prompt of a turn of its
+// own, behind the first, and never at the same time.
+func TestTwoMessagesOfOneConversationAreOneMergedTurn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		isolateFactories(t)
+		var built core.Handler
+		Register("respondio", captures(&built))
+		h := &holding{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
+		if _, err := Build(context.Background(), discard(), configured("respondio"), h); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		first := arrive(built, "123", "one")
+		<-h.entered
+		second := arrive(built, "123", "two")
+		synctest.Wait()
+		if seen := h.seen(); len(seen) != 1 {
+			t.Fatalf("the handler saw %q, want the first message only", seen)
+		}
+
+		h.release <- struct{}{}
+		<-h.entered
+		h.release <- struct{}{}
+		<-first
+		<-second
+		if seen := h.seen(); len(seen) != 2 || seen[0] != "one" || seen[1] != "two" {
+			t.Fatalf("the handler saw %q, want [one two]", seen)
+		}
+	})
+}
+
+// TestTwoConversationsDoNotWaitForEachOther releases nothing before both turns
+// are inside the handler, so a build that serialises them fails by deadlock and
+// not by a measurement of time.
+func TestTwoConversationsDoNotWaitForEachOther(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		isolateFactories(t)
+		var built core.Handler
+		Register("respondio", captures(&built))
+		h := &holding{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
+		if _, err := Build(context.Background(), discard(), configured("respondio"), h); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		first := arrive(built, "123", "one")
+		second := arrive(built, "456", "two")
+		<-h.entered
+		<-h.entered
+
+		h.release <- struct{}{}
+		h.release <- struct{}{}
+		<-first
+		<-second
+	})
 }
