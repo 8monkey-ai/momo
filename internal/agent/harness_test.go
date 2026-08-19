@@ -104,6 +104,20 @@ func TestEachChunkIsEmittedAsItArrives(t *testing.T) {
 	}
 }
 
+// TestAChunkAfterTheTurnIsNotEmitted pins what momo does with content the agent
+// streams once it has answered the prompt: the turn is over, so the chunk reaches
+// no channel. Under the race detector it holds the turn and the connection apart
+// as well.
+func TestAChunkAfterTheTurnIsNotEmitted(t *testing.T) {
+	t.Setenv("STUBAGENT_LATE_CHUNK", "1")
+	h, _ := harness(t)
+	for i, content := range emitted(t, h, "respondio:1") {
+		if content[0].Text == "after the turn" {
+			t.Fatalf("emit call %d carried the chunk the agent streamed after the turn", i)
+		}
+	}
+}
+
 func TestTheSubprocessIsGoneAfterTheTurn(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	t.Setenv("STUBAGENT_PID_FILE", pidFile)

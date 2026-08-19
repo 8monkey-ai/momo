@@ -79,15 +79,15 @@ type queue struct {
 	ctx      context.Context
 	delivery Delivery
 	reply    Reply
-	// open is the text no separator has closed yet. accept and drain are the only
-	// readers of it and both run on the turn's goroutine.
-	open string
 	// signal wakes the consumer. Capacity one is enough: it says that the queue
 	// changed, not how.
 	signal chan struct{}
 	done   chan struct{}
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// open is the text no separator has closed yet. A chunk arrives on the goroutine
+	// the agent dispatches on, so it is held under the lock like the rest.
+	open   string
 	parts  [][]ContentBlock
 	closed bool
 	err    error
@@ -111,28 +111,30 @@ func start(ctx context.Context, d Delivery, reply Reply) *queue {
 // serially, so an agent held here would stop answering the permission request of
 // its own turn.
 func (q *queue) accept(_ context.Context, content []ContentBlock) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	for _, block := range content {
 		if block.Type == "text" {
 			closed, open := split(q.open+block.Text, q.delivery.Separator)
 			q.open = open
 			for _, paragraph := range closed {
-				q.push(Text(paragraph))
+				q.add(Text(paragraph))
 			}
 			continue
 		}
 		// A block momo cannot split is a message of its own, and the text written
 		// before it belongs in front of it.
 		q.closeOpen()
-		q.push([]ContentBlock{block})
+		q.add([]ContentBlock{block})
 	}
-	return q.failure()
+	return q.err
 }
 
 // drain closes the text the turn left open and waits for the queue to empty, so
 // the caller learns of the last paragraph before it answers its own transport.
 func (q *queue) drain() error {
-	q.closeOpen()
 	q.mu.Lock()
+	q.closeOpen()
 	q.closed = true
 	q.mu.Unlock()
 	q.wake()
@@ -140,19 +142,19 @@ func (q *queue) drain() error {
 	return q.failure()
 }
 
+// closeOpen queues the text no separator closed. The caller holds the lock.
 func (q *queue) closeOpen() {
 	paragraph := strings.TrimSpace(q.open)
 	q.open = ""
 	if paragraph == "" {
 		return
 	}
-	q.push(Text(paragraph))
+	q.add(Text(paragraph))
 }
 
-func (q *queue) push(content []ContentBlock) {
-	q.mu.Lock()
+// add queues one part and wakes the consumer. The caller holds the lock.
+func (q *queue) add(content []ContentBlock) {
 	q.parts = append(q.parts, content)
-	q.mu.Unlock()
 	q.wake()
 }
 

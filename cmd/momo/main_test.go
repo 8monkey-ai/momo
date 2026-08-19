@@ -149,7 +149,9 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sent := make(chan string, len(tc.want))
+			// One more than the turn delivers, so a message too many is recorded
+			// instead of blocking the channel that sent it.
+			sent := make(chan string, len(tc.want)+1)
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -183,6 +185,11 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 				case <-time.After(30 * time.Second):
 					t.Fatalf("no reply reached respond.io, want %s", want)
 				}
+			}
+			select {
+			case extra := <-sent:
+				t.Fatalf("respond.io received %s as well, want %d call(s)", extra, len(tc.want))
+			case <-time.After(time.Second):
 			}
 		})
 	}

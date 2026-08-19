@@ -165,15 +165,22 @@ func (p *process) newSession(ctx context.Context, dir string) (string, error) {
 // prompt emits the streamed content from the prompt onwards, so content the
 // agent streamed while momo prepared the session is not in this turn's reply.
 func (p *process) prompt(ctx context.Context, sessionID string, content []core.ContentBlock, emit core.Emit) error {
-	p.mu.Lock()
-	p.emit = emit
-	p.mu.Unlock()
+	p.setEmit(emit)
+	// An agent that streams a chunk after it answered the prompt streams it into
+	// no turn.
+	defer p.setEmit(nil)
 	var res wire.PromptResult
 	params := wire.PromptParams{SessionID: sessionID, Prompt: content}
 	if err := p.conn.Call(ctx, wire.MethodPrompt, params, &res); err != nil {
 		return fmt.Errorf("session/prompt: %w", err)
 	}
 	return nil
+}
+
+func (p *process) setEmit(emit core.Emit) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.emit = emit
 }
 
 // handler answers what the agent sends momo: the chunks of its message, the

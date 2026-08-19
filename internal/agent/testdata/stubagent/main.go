@@ -218,7 +218,26 @@ func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
 			return err
 		}
 	}
-	return respond(enc, req.ID, map[string]any{"stopReason": "end_turn"})
+	if err := respond(enc, req.ID, map[string]any{"stopReason": "end_turn"}); err != nil {
+		return err
+	}
+	return lateChunk(enc, p.SessionID)
+}
+
+// lateChunk streams one chunk after the turn was answered, which v1 does not
+// allow, so a test drives what momo does with content that belongs to no turn.
+func lateChunk(enc *json.Encoder, sessionID string) error {
+	if os.Getenv("STUBAGENT_LATE_CHUNK") == "" {
+		return nil
+	}
+	update := map[string]any{
+		"sessionId": sessionID,
+		"update": map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content":       map[string]any{"type": "text", "text": "after the turn"},
+		},
+	}
+	return enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": update})
 }
 
 // requestPermission asks the client, in the middle of the turn, to allow one tool
