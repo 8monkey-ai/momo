@@ -123,15 +123,22 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, se
 }
 
 // reply emits the blocks as session/update notifications on the stream of the
-// session the prompt arrived on, one notification per block, in order. The
-// connection manager is shared; the destination is what this closure holds.
+// session the prompt arrived on, one notification per block, in order. Each call
+// carries a message id of its own, so a client joins the blocks of one call into
+// one message and keeps two calls apart. The connection manager is shared; the
+// destination is what this closure holds.
 func (e *endpoint) reply(connID, sessionID string) core.Reply {
 	return func(_ context.Context, content []core.ContentBlock) error {
+		messageID := newID()
 		for _, block := range content {
 			notif := &jsonrpc2.Request{Method: wire.MethodUpdate, Notif: true}
 			if err := notif.SetParams(wire.UpdateParams{
 				SessionID: sessionID,
-				Update:    wire.Update{SessionUpdate: wire.SessionUpdateAgentMessageChunk, Content: block},
+				Update: wire.Update{
+					SessionUpdate: wire.SessionUpdateAgentMessageChunk,
+					Content:       block,
+					MessageID:     messageID,
+				},
 			}); err != nil {
 				return err
 			}

@@ -103,6 +103,17 @@ channels:
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
     sent_path: "/respondio/sent"
+    # How momo delivers a reply on this channel. Every channel takes the block,
+    # and the defaults send the whole reply as one message.
+    delivery:
+      # Text that closes a paragraph. Each paragraph is one message. Empty keeps
+      # the reply in one message. Default: ""
+      separator: "\n\n"
+      # Pace of the pause before each paragraph, in words per minute. 0 pauses
+      # for nothing. Default: 0
+      words_per_minute: 60
+      # Cap on the pause of one paragraph. Must be positive. Default: "10m"
+      max_delay: "10m"
 
   acp:
     # Bearer token every ACP request must present. Required.
@@ -209,10 +220,14 @@ The client connects like this:
 5. `POST` `session/prompt` with both headers. The prompt reaches momo, and the reply and
    the response arrive on that session's stream.
 
-momo answers a prompt on the session's own stream: one `session/update` notification per
-content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
-response with `stopReason: "end_turn"`, always after the content it is ending. A turn that
-fails is answered with an error in place of that response.
+momo answers a prompt on the session's own stream: one `session/update` notification
+per content block, each carrying a single `agent_message_chunk`, and then the
+`session/prompt` response with `stopReason: "end_turn"`, always after the content it
+is ending. A turn that fails is answered with an error in place of that response.
+
+Every notification of one delivered message carries the same `messageId`, and a new
+message carries a new one, so a client that splits on `messageId` sees the messages
+the channel's `delivery` block produced.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
@@ -239,10 +254,22 @@ One message is one turn:
 2. momo sends `initialize`, and the agent answers with protocol version 1.
 3. momo continues the conversation's session on that directory, or opens one when the
    conversation has none, and sends the message as the prompt.
-4. The agent streams its answer, and momo collects it.
-5. momo sends the collected answer as one message on the channel the message arrived on.
-6. momo interrupts the agent, waits up to five seconds for it to store its session, and
+4. The agent streams its answer, and momo delivers it as the channel's `delivery`
+   settings say: one message at the end of the turn by default, or one message per
+   paragraph while the turn is still running.
+5. momo interrupts the agent, waits up to five seconds for it to store its session, and
    then stops it.
+
+A `separator` closes a paragraph, and each closed paragraph is sent as its own
+message on the channel the message arrived on. Whitespace around a paragraph is
+dropped, and an empty paragraph is not sent. Before each paragraph the contact
+waits its reading time at `words_per_minute`, capped by `max_delay`, less the time
+the agent already spent writing it: a five-word paragraph at 60 words per minute
+has a five-second target, and an agent that took four seconds to write it adds one
+second. The pause does not block the agent, because momo delivers the messages
+while the turn continues. A message that cannot be sent ends
+the turn's delivery: the paragraphs still waiting are dropped, and the turn is
+reported as failed.
 
 An agent that asks `session/request_permission` in the middle of a turn gets the first
 option that allows the action, `allow_once` or `allow_always`. Nobody is at the conversation

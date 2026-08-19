@@ -23,7 +23,7 @@ type Config struct {
 	ReadTimeout       time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
-	Channels          map[string]channel.Decoder
+	Channels          map[string]channel.Config
 	Agent             func(any) error
 }
 
@@ -71,7 +71,7 @@ func parse(raw []byte) (*Config, error) {
 		ReadTimeout:     duration(f.ReadTimeout, 30*time.Second),
 		IdleTimeout:     duration(f.IdleTimeout, 2*time.Minute),
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
-		Channels:        map[string]channel.Decoder{},
+		Channels:        map[string]channel.Config{},
 		Agent:           decoderFor(f.Agent),
 	}
 	if cfg.Listen == "" {
@@ -85,9 +85,30 @@ func parse(raw []byte) (*Config, error) {
 		return nil, errors.New("invalid configuration: max_connections cannot be negative")
 	}
 	for name, node := range f.Channels {
-		cfg.Channels[name] = decoderFor(node)
+		settings, delivery := splitDelivery(node)
+		cfg.Channels[name] = channel.Config{Settings: decoderFor(settings), Delivery: decoderFor(delivery)}
 	}
 	return cfg, nil
+}
+
+// splitDelivery takes the delivery block out of a channel's block: momo decodes
+// that block itself, and the channel decodes what is left strictly, so a key it
+// does not know must no longer be there.
+func splitDelivery(node yaml.Node) (settings, delivery yaml.Node) {
+	settings = node
+	if node.Kind != yaml.MappingNode {
+		return settings, delivery
+	}
+	kept := make([]*yaml.Node, 0, len(node.Content))
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "delivery" {
+			delivery = *node.Content[i+1]
+			continue
+		}
+		kept = append(kept, node.Content[i], node.Content[i+1])
+	}
+	settings.Content = kept
+	return settings, delivery
 }
 
 func duration(set *time.Duration, fallback time.Duration) time.Duration {

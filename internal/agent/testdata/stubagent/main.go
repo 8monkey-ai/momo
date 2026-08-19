@@ -16,8 +16,9 @@ import (
 )
 
 // chunks is the reply of every prompt, one content block for each element, so a
-// test asserts a literal.
-var chunks = []string{"hello from", "the stub agent"}
+// test asserts a literal. The two of them are one blank line apart, so the reply
+// is one message or two paragraphs, depending on the delivery under test.
+var chunks = []string{"hello from\n\n", "the stub agent"}
 
 type request struct {
 	ID     *json.RawMessage `json:"id"`

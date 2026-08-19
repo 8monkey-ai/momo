@@ -25,9 +25,17 @@ type Channel interface {
 	Routes() []Route
 }
 
-// Decoder fills v from the channel's block in the configuration file, leaving v
-// untouched when the block is empty.
+// Decoder fills v from a block in the configuration file, leaving v untouched
+// when the block is empty.
 type Decoder func(v any) error
+
+// Config is one channel's configuration: the settings the channel decodes
+// itself, and the delivery block momo decodes for it. A channel never sees the
+// delivery block, so its own strict decoding is unaffected by it.
+type Config struct {
+	Settings Decoder
+	Delivery Decoder
+}
 
 // Factory builds a channel from its configuration. The context is the
 // channel's lifetime: momo cancels it when it begins shutting down, and a
@@ -75,14 +83,18 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Decoder, h core.Handler) ([]Instance, error) {
+func Build(lifetime context.Context, configs map[string]Config, h core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
 		if !known {
 			return nil, fmt.Errorf("unknown channel %q, known channels: %v", name, slices.Sorted(maps.Keys(factories)))
 		}
-		c, err := f(lifetime, configs[name], qualifying{name: name, h: h})
+		delivery, err := core.NewDelivery(configs[name].Delivery)
+		if err != nil {
+			return nil, fmt.Errorf("channel %q: %w", name, err)
+		}
+		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

@@ -25,8 +25,13 @@ import (
 // reply path with no agent subprocess.
 type echoAgent struct{}
 
-func (echoAgent) Turn(_ context.Context, m core.Message) ([]core.ContentBlock, error) {
-	return m.Content, nil
+func (echoAgent) Turn(_ context.Context, m core.Message, emit core.Emit) error {
+	for _, block := range m.Content {
+		if err := emit([]core.ContentBlock{block}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func echoHandler() core.Handler {
@@ -36,8 +41,8 @@ func echoHandler() core.Handler {
 // failingAgent stands for an agent that exits before it replies.
 type failingAgent struct{}
 
-func (failingAgent) Turn(context.Context, core.Message) ([]core.ContentBlock, error) {
-	return nil, errors.New("the agent exited before it replied")
+func (failingAgent) Turn(context.Context, core.Message, core.Emit) error {
+	return errors.New("the agent exited before it replied")
 }
 
 const token = "operator-token"

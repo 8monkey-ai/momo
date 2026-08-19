@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/8monkey-ai/momo/internal/core"
 )
 
 func load(t *testing.T, body string) *Config {
@@ -45,7 +47,7 @@ func TestChannelBlockDecodesIntoTheChannelsOwnSettings(t *testing.T) {
 	var s struct {
 		ReceivedSecret string `yaml:"received_secret"`
 	}
-	if err := cfg.Channels["respondio"](&s); err != nil {
+	if err := cfg.Channels["respondio"].Settings(&s); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if s.ReceivedSecret != "a" {
@@ -58,7 +60,7 @@ func TestEmptyChannelBlockLeavesDefaults(t *testing.T) {
 	s := struct {
 		Path string `yaml:"path"`
 	}{Path: "default"}
-	if err := cfg.Channels["respondio"](&s); err != nil {
+	if err := cfg.Channels["respondio"].Settings(&s); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if s.Path != "default" {
@@ -71,7 +73,7 @@ func TestMisspelledChannelSettingIsReported(t *testing.T) {
 	var s struct {
 		ReceivedSecret string `yaml:"received_secret"`
 	}
-	if err := cfg.Channels["respondio"](&s); err == nil {
+	if err := cfg.Channels["respondio"].Settings(&s); err == nil {
 		t.Fatal("decode succeeded, want an error naming the unknown setting")
 	}
 }
@@ -105,5 +107,56 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 func TestMissingFileIsReported(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load succeeded, want an error")
+	}
+}
+
+// delivery is the delivery a channel of the loaded configuration is built with.
+func delivery(t *testing.T, cfg *Config, name string) core.Delivery {
+	t.Helper()
+	d, err := core.NewDelivery(cfg.Channels[name].Delivery)
+	if err != nil {
+		t.Fatalf("delivery of %q: %v", name, err)
+	}
+	return d
+}
+
+func TestNoDeliveryBlockSendsTheReplyAsOneMessage(t *testing.T) {
+	cfg := load(t, "channels:\n  respondio:\n    api_token: a\n")
+	if got := delivery(t, cfg, "respondio"); got.Separator != "" || got.WordsPerMinute != 0 || got.MaxDelay != 10*time.Minute {
+		t.Fatalf("delivery = %+v, want no separator, no pace and a 10m cap", got)
+	}
+}
+
+func TestTheDeliveryBlockIsDecodedAndKeptFromTheChannel(t *testing.T) {
+	cfg := load(t, "channels:\n  respondio:\n    api_token: a\n    delivery:\n"+
+		"      separator: \"---\"\n      words_per_minute: 60\n      max_delay: \"30s\"\n")
+	got := delivery(t, cfg, "respondio")
+	if got.Separator != "---" || got.WordsPerMinute != 60 || got.MaxDelay != 30*time.Second {
+		t.Fatalf("delivery = %+v, want ---, 60 and 30s", got)
+	}
+	// The channel decodes its own block strictly, so a delivery key still in it
+	// would be an unknown setting here.
+	var settings struct {
+		APIToken string `yaml:"api_token"`
+	}
+	if err := cfg.Channels["respondio"].Settings(&settings); err != nil {
+		t.Fatalf("the channel saw the delivery block: %v", err)
+	}
+	if settings.APIToken != "a" {
+		t.Fatalf("api_token = %q, want \"a\"", settings.APIToken)
+	}
+}
+
+func TestADeliveryMomoCannotPaceIsRefused(t *testing.T) {
+	for name, block := range map[string]string{
+		"negative words_per_minute": "      words_per_minute: -1\n",
+		"max_delay of zero":         "      max_delay: 0s\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := load(t, "channels:\n  respondio:\n    delivery:\n"+block)
+			if _, err := core.NewDelivery(cfg.Channels["respondio"].Delivery); err == nil {
+				t.Fatal("the delivery was accepted, want an error naming the setting")
+			}
+		})
 	}
 }

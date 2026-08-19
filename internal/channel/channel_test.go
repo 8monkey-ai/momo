@@ -3,12 +3,40 @@ package channel
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/8monkey-ai/momo/internal/core"
 )
 
 func noSettings(any) error { return nil }
+
+// configured answers the configuration of every named channel, with no settings
+// and no delivery block, the way an operator who names a channel and nothing else
+// configures it.
+func configured(names ...string) map[string]Config {
+	configs := map[string]Config{}
+	for _, name := range names {
+		configs[name] = Config{Settings: noSettings, Delivery: noSettings}
+	}
+	return configs
+}
+
+// yamlDecoder decodes a block written as YAML, the way config hands one over.
+func yamlDecoder(body string) Decoder {
+	return func(v any) error {
+		dec := yaml.NewDecoder(strings.NewReader(body))
+		dec.KnownFields(true)
+		if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		return nil
+	}
+}
 
 func stub(name string) Factory {
 	return func(context.Context, Decoder, core.Handler) (Channel, error) {
@@ -34,7 +62,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 	Register("stub-b", stub("b"))
 	Register("stub-a", stub("a"))
 
-	got, err := Build(context.Background(), map[string]Decoder{"stub-b": noSettings, "stub-a": noSettings}, nil)
+	got, err := Build(context.Background(), configured("stub-b", "stub-a"), nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -44,7 +72,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 }
 
 func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
-	if _, err := Build(context.Background(), map[string]Decoder{"telegran": noSettings}, nil); err == nil {
+	if _, err := Build(context.Background(), configured("telegran"), nil); err == nil {
 		t.Fatal("Build succeeded, want an error naming the unknown channel")
 	}
 }
@@ -54,7 +82,7 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 	broken := errors.New("missing signing key")
 	Register("stub-broken", func(context.Context, Decoder, core.Handler) (Channel, error) { return nil, broken })
 
-	_, err := Build(context.Background(), map[string]Decoder{"stub-broken": noSettings}, nil)
+	_, err := Build(context.Background(), configured("stub-broken"), nil)
 	if !errors.Is(err, broken) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
@@ -96,7 +124,7 @@ func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
 	Register("acp", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings, "acp": noSettings}, got); err != nil {
+	if _, err := Build(context.Background(), configured("respondio", "acp"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 2 || got.received[0] != "acp:123" || got.received[1] != "respondio:123" {
@@ -109,7 +137,7 @@ func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
 	Register("respondio", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.sent) != 1 || got.sent[0] != "respondio:123" {
@@ -123,7 +151,7 @@ func TestChannelLearnsThatTheTurnFailed(t *testing.T) {
 	Register("respondio", deliver("123", &failed))
 	turn := errors.New("the agent exited before it replied")
 
-	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, &recorder{err: turn}); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), &recorder{err: turn}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if !errors.Is(failed, turn) {
@@ -136,10 +164,67 @@ func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
 	Register("respondio", deliver("acp:123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), map[string]Decoder{"respondio": noSettings}, got); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), got); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 1 || got.received[0] != "respondio:acp:123" {
 		t.Fatalf("received = %v, want [respondio:acp:123]", got.received)
+	}
+}
+
+// replies is a channel that hands one message to the handler and records the text
+// of every reply the turn delivered.
+func replies(texts *[]string) Factory {
+	return func(_ context.Context, _ Decoder, h core.Handler) (Channel, error) {
+		m := core.Message{Conversation: "1", Content: core.Text("hi")}
+		record := func(_ context.Context, content []core.ContentBlock) error {
+			*texts = append(*texts, core.TextOf(content))
+			return nil
+		}
+		return fixed{}, h.Received(context.Background(), m, record)
+	}
+}
+
+// twoParagraphs is an agent whose reply holds one blank line.
+type twoParagraphs struct{}
+
+func (twoParagraphs) Turn(_ context.Context, _ core.Message, emit core.Emit) error {
+	return emit(core.Text("first\n\nsecond"))
+}
+
+// TestEachChannelDeliversWithItsOwnSettings pins that delivery belongs to the
+// channel: one reply, two channels, two different results in the same run.
+func TestEachChannelDeliversWithItsOwnSettings(t *testing.T) {
+	isolateFactories(t)
+	var split, whole []string
+	Register("respondio", replies(&split))
+	Register("acp", replies(&whole))
+	configs := map[string]Config{
+		"respondio": {Settings: noSettings, Delivery: yamlDecoder("separator: \"\\n\\n\"\n")},
+		"acp":       {Settings: noSettings, Delivery: noSettings},
+	}
+	h := core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), twoParagraphs{})
+
+	if _, err := Build(context.Background(), configs, h); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(split) != 2 || split[0] != "first" || split[1] != "second" {
+		t.Fatalf("respondio delivered %q, want two paragraphs", split)
+	}
+	if len(whole) != 1 || whole[0] != "first\n\nsecond" {
+		t.Fatalf("acp delivered %q, want one message", whole)
+	}
+}
+
+func TestBuildRefusesADeliveryItCannotPace(t *testing.T) {
+	isolateFactories(t)
+	Register("respondio", stub("respondio"))
+	configs := map[string]Config{
+		"respondio": {Settings: noSettings, Delivery: yamlDecoder("words_per_minute: -1\n")},
+	}
+
+	_, err := Build(context.Background(), configs, nil)
+	if err == nil || !strings.Contains(err.Error(), "respondio") || !strings.Contains(err.Error(), "words_per_minute") {
+		t.Fatalf("Build error = %v, want it to name the channel and the setting", err)
 	}
 }
