@@ -176,3 +176,39 @@ func TestReplyReportsAnUndeliveredNotification(t *testing.T) {
 		t.Fatalf("error %q does not name the session", err)
 	}
 }
+
+// blocksAgent replies twice: two blocks in one message, then one block in a
+// message of its own.
+type blocksAgent struct{}
+
+func (blocksAgent) Turn(_ context.Context, _ core.Message, emit core.Emit) error {
+	if err := emit([]core.ContentBlock{{Type: "text", Text: "first"}, {Type: "text", Text: "still first"}}); err != nil {
+		return err
+	}
+	return emit(core.Text("second"))
+}
+
+// TestEachDeliveredMessageCarriesItsOwnMessageID pins what a client joins: the
+// blocks of one message share an id, and the next message starts a new one.
+func TestEachDeliveredMessageCarriesItsOwnMessageID(t *testing.T) {
+	h := unserved()
+	h.serve(t, core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), blocksAgent{}))
+	connID, sessionID, _, sessionStream := h.session(t)
+
+	h.prompt(t, connID, sessionID, `{"type":"text","text":"hello"}`)
+
+	ids := make([]string, 0, 3)
+	for range 3 {
+		id := sessionStream.nextUpdate(t).Params.Update.MessageID
+		if id == "" {
+			t.Fatal("a delivered message carries no messageId")
+		}
+		ids = append(ids, id)
+	}
+	if ids[0] != ids[1] {
+		t.Fatalf("the blocks of one message carry %q and %q, want one id", ids[0], ids[1])
+	}
+	if ids[2] == ids[0] {
+		t.Fatalf("the second message carries %q as well, want an id of its own", ids[2])
+	}
+}

@@ -62,22 +62,58 @@ func harness(t *testing.T) (*Harness, string) {
 	return h, root
 }
 
-func TestTurnAnswersWithTheContentTheAgentStreamed(t *testing.T) {
-	h, _ := harness(t)
-	content, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")})
-	if err != nil {
+// emitted runs one turn and answers every emit call it made, so a test states
+// the streamed reply as literals.
+func emitted(t *testing.T, h *Harness, conversation string) [][]core.ContentBlock {
+	t.Helper()
+	var calls [][]core.ContentBlock
+	m := core.Message{Conversation: conversation, Content: core.Text("hi")}
+	if err := h.Turn(context.Background(), m, func(content []core.ContentBlock) error {
+		calls = append(calls, content)
+		return nil
+	}); err != nil {
 		t.Fatalf("Turn: %v", err)
 	}
+	return calls
+}
+
+// turn runs one turn and drops what it emitted, for a test that asserts
+// something else about it.
+func turn(t *testing.T, h *Harness, conversation string) {
+	t.Helper()
+	emitted(t, h, conversation)
+}
+
+// TestEachChunkIsEmittedAsItArrives pins that the reply reaches the channel while
+// the turn runs: the stub agent streams two chunks, and both are emitted before
+// Turn returns.
+func TestEachChunkIsEmittedAsItArrives(t *testing.T) {
+	h, _ := harness(t)
+	calls := emitted(t, h, "respondio:1")
 	want := []core.ContentBlock{
-		{Type: "text", Text: "hello from"},
+		{Type: "text", Text: "hello from\n\n"},
 		{Type: "text", Text: "the stub agent"},
 	}
-	if len(content) != len(want) {
-		t.Fatalf("content = %+v, want %+v", content, want)
+	if len(calls) != len(want) {
+		t.Fatalf("emit was called %d times with %+v, want %d calls", len(calls), calls, len(want))
 	}
-	for i, block := range content {
-		if block != want[i] {
-			t.Fatalf("content[%d] = %+v, want %+v", i, block, want[i])
+	for i, content := range calls {
+		if len(content) != 1 || content[0] != want[i] {
+			t.Fatalf("emit call %d carried %+v, want %+v", i, content, want[i])
+		}
+	}
+}
+
+// TestAChunkAfterTheTurnIsNotEmitted pins what momo does with content the agent
+// streams once it has answered the prompt: the turn is over, so the chunk reaches
+// no channel. Under the race detector it holds the turn and the connection apart
+// as well.
+func TestAChunkAfterTheTurnIsNotEmitted(t *testing.T) {
+	t.Setenv("STUBAGENT_LATE_CHUNK", "1")
+	h, _ := harness(t)
+	for i, content := range emitted(t, h, "respondio:1") {
+		if content[0].Text == "after the turn" {
+			t.Fatalf("emit call %d carried the chunk the agent streamed after the turn", i)
 		}
 	}
 }
@@ -86,9 +122,7 @@ func TestTheSubprocessIsGoneAfterTheTurn(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	t.Setenv("STUBAGENT_PID_FILE", pidFile)
 	h, _ := harness(t)
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	raw, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("the stub agent reported no pid: %v", err)
@@ -108,9 +142,7 @@ func TestTheSubprocessIsGoneAfterTheTurn(t *testing.T) {
 
 func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 	h, root := harness(t)
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	entries, err := os.ReadDir(filepath.Join(root, dirName("respondio:1")))
 	if err != nil {
 		t.Fatalf("the conversation directory is missing: %v", err)
@@ -135,8 +167,8 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 	failed := make(chan error, 2)
 	for _, conversation := range []string{"respondio:1", "respondio:2"} {
 		go func() {
-			_, err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")})
-			failed <- err
+			m := core.Message{Conversation: conversation, Content: core.Text("hi")}
+			failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
 		}()
 	}
 
@@ -175,9 +207,7 @@ func TestTheSessionWorksInAnAbsoluteDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")}); err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
+	turn(t, h, "respondio:1")
 	cwd, err := os.ReadFile(cwdFile)
 	if err != nil {
 		t.Fatalf("the stub agent reported no cwd: %v", err)
@@ -196,9 +226,7 @@ func sessionTrace(t *testing.T, conversations ...string) ([]string, string) {
 	t.Setenv("STUBAGENT_TRACE", path)
 	h, root := harness(t)
 	for _, conversation := range conversations {
-		if _, err := h.Turn(context.Background(), core.Message{Conversation: conversation, Content: core.Text("hi")}); err != nil {
-			t.Fatalf("Turn: %v", err)
-		}
+		turn(t, h, conversation)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -266,12 +294,9 @@ func TestATurnAnswersThePermissionRequestAndStillReplies(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "trace")
 			t.Setenv("STUBAGENT_TRACE", path)
 			h, _ := harness(t)
-			content, err := h.Turn(context.Background(), core.Message{Conversation: "respondio:1", Content: core.Text("hi")})
-			if err != nil {
-				t.Fatalf("Turn: %v", err)
-			}
-			if len(content) != 2 || content[0].Text != "hello from" {
-				t.Fatalf("content = %+v, want the stub agent's reply", content)
+			calls := emitted(t, h, "respondio:1")
+			if len(calls) != 2 || calls[0][0].Text != "hello from\n\n" {
+				t.Fatalf("emitted %+v, want the reply of the stub agent", calls)
 			}
 			raw, err := os.ReadFile(path)
 			if err != nil {

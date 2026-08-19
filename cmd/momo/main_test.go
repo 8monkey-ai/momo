@@ -129,35 +129,79 @@ func buildStub(t *testing.T) string {
 }
 
 // TestAMessageOnRespondioIsAnsweredByTheAgent drives the whole path: a signed
-// webhook arrives, the agent subprocess runs the turn, and the content it
-// streamed leaves as one send-a-message call.
+// webhook arrives, the agent subprocess runs the turn, and what it streamed
+// leaves as the channel's delivery says. The stub agent's reply holds two
+// paragraphs, so the separator decides how many messages the contact gets.
 func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
-	sent := make(chan string, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("reading the API call: %v", err)
-			return
-		}
-		sent <- r.URL.Path + " " + string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
+	for name, tc := range map[string]struct {
+		delivery string
+		want     []string
+	}{
+		"one message by default": {
+			want: []string{`/contact/id:123/message {"message":{"text":"hello from\n\nthe stub agent","type":"text"}}`},
+		},
+		"one message per paragraph": {
+			delivery: "    delivery:\n      separator: \"\\n\\n\"\n",
+			want: []string{
+				`/contact/id:123/message {"message":{"text":"hello from","type":"text"}}`,
+				`/contact/id:123/message {"message":{"text":"the stub agent","type":"text"}}`,
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// One more than the turn delivers, so a message too many is recorded
+			// instead of blocking the channel that sent it.
+			sent := make(chan string, len(tc.want)+1)
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("reading the API call: %v", err)
+					return
+				}
+				sent <- r.URL.Path + " " + string(body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer api.Close()
 
-	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
-		fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n", api.URL))
-	l, err := listen(cfg)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+			cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
+				fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n", api.URL)+
+				tc.delivery)
+			l, err := listen(cfg)
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			go func() { _ = serve(ctx, discard(), cfg, l) }()
+
+			post(t, l.Addr().String())
+
+			for _, want := range tc.want {
+				select {
+				case call := <-sent:
+					if call != want {
+						t.Fatalf("respond.io received %s, want %s", call, want)
+					}
+				case <-time.After(30 * time.Second):
+					t.Fatalf("no reply reached respond.io, want %s", want)
+				}
+			}
+			select {
+			case extra := <-sent:
+				t.Fatalf("respond.io received %s as well, want %d call(s)", extra, len(tc.want))
+			case <-time.After(time.Second):
+			}
+		})
 	}
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	go func() { _ = serve(ctx, discard(), cfg, l) }()
+}
 
+// post delivers one signed message.received webhook.
+func post(t *testing.T, address string) {
+	t.Helper()
 	event := `{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":"hi"}}}`
 	mac := hmac.New(sha256.New, []byte("secret"))
 	mac.Write([]byte(event))
-	req, err := http.NewRequest(http.MethodPost, "http://"+l.Addr().String()+"/respondio/received", strings.NewReader(event))
+	req, err := http.NewRequest(http.MethodPost, "http://"+address+"/respondio/received", strings.NewReader(event))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,16 +214,6 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("webhook = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	select {
-	case call := <-sent:
-		want := `/contact/id:123/message {"message":{"text":"hello from the stub agent","type":"text"}}`
-		if call != want {
-			t.Fatalf("respond.io received %s, want %s", call, want)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no reply reached respond.io")
 	}
 }
 
