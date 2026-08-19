@@ -27,8 +27,9 @@ type capture struct {
 	calls chan call
 }
 
-func (c capture) Received(ctx context.Context, m core.Message, _ core.Reply) {
+func (c capture) Received(ctx context.Context, m core.Message, _ core.Reply) error {
 	c.calls <- call{direction: "received", message: m, ctxErr: ctx.Err()}
+	return nil
 }
 
 func (c capture) Sent(ctx context.Context, m core.Message) {

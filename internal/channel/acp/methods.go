@@ -116,7 +116,9 @@ func (e *endpoint) prompt(ctx context.Context, req *jsonrpc2.Request, connID, se
 	// The client's prompt is the contact speaking, and momo issues the session
 	// id, so the session is the contact. Received returns once the reply has been
 	// emitted, so the turn is answered after its content, as v1 requires.
-	e.core.Received(ctx, core.Message{Conversation: sessionID, Content: p.Prompt}, e.reply(connID, sessionID))
+	if err := e.core.Received(ctx, core.Message{Conversation: sessionID, Content: p.Prompt}, e.reply(connID, sessionID)); err != nil {
+		return errorResponse(req.ID, jsonrpc2.CodeInternalError, err.Error())
+	}
 	return result(req.ID, wire.PromptResult{StopReason: wire.StopReasonEndTurn})
 }
 

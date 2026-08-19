@@ -211,7 +211,8 @@ The client connects like this:
 
 momo answers a prompt on the session's own stream: one `session/update` notification per
 content block, each carrying a single `agent_message_chunk`, and then the `session/prompt`
-response with `stopReason: "end_turn"`, always after the content it is ending.
+response with `stopReason: "end_turn"`, always after the content it is ending. A turn that
+fails is answered with an error in place of that response.
 
 `DELETE` the endpoint with the connection id to finish: momo releases the connection's
 sessions and closes its streams. A connection nobody is listening to is dropped on its own
@@ -263,3 +264,8 @@ the directory, continues that history.
 The agent inherits momo's environment, so credentials the agent needs, such as an API key,
 belong in the environment momo runs with. The agent's stderr output reaches momo's log,
 which is the place to look when a turn fails.
+
+A turn that fails, because the agent could not answer or because the reply could not be
+delivered, is reported on the channel the message arrived on, and never to the contact:
+respond.io gets an internal comment on the conversation, and an ACP client gets an error
+for `session/prompt` in place of a stop reason.

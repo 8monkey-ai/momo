@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,14 +33,24 @@ func echoHandler() core.Handler {
 	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
 }
 
+// failingAgent stands for an agent that exits before it replies.
+type failingAgent struct{}
+
+func (failingAgent) Turn(context.Context, core.Message) ([]core.ContentBlock, error) {
+	return nil, errors.New("the agent exited before it replied")
+}
+
 const token = "operator-token"
 
 type capture struct {
 	received chan core.Message
 }
 
-func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) { c.received <- m }
-func (c capture) Sent(_ context.Context, m core.Message)                   { c.received <- m }
+func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) error {
+	c.received <- m
+	return nil
+}
+func (c capture) Sent(_ context.Context, m core.Message) { c.received <- m }
 
 type harness struct {
 	url   string

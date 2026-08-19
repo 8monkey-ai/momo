@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 )
@@ -62,9 +63,11 @@ type Reply func(ctx context.Context, content []ContentBlock) error
 
 // Handler is what a channel delivers messages to. The two directions are
 // separate methods because each is an occasion for a different action, and only
-// the incoming one has something to answer.
+// the incoming one has something to answer. Received logs a failed turn and
+// returns it, so the channel that received the message reports it on its own
+// transport as well.
 type Handler interface {
-	Received(ctx context.Context, m Message, reply Reply)
+	Received(ctx context.Context, m Message, reply Reply) error
 	Sent(ctx context.Context, m Message)
 }
 
@@ -86,16 +89,18 @@ type handler struct {
 	agent Agent
 }
 
-func (h handler) Received(ctx context.Context, m Message, reply Reply) {
+func (h handler) Received(ctx context.Context, m Message, reply Reply) error {
 	h.log.Info("message received", attrs(m)...)
 	content, err := h.agent.Turn(ctx, m)
 	if err != nil {
 		h.log.Error("turn failed", "conversation", m.Conversation, "error", err)
-		return
+		return fmt.Errorf("turn: %w", err)
 	}
 	if err := reply(ctx, content); err != nil {
 		h.log.Error("reply failed", "conversation", m.Conversation, "error", err)
+		return fmt.Errorf("reply: %w", err)
 	}
+	return nil
 }
 
 func (h handler) Sent(_ context.Context, m Message) {

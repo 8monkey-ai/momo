@@ -2,6 +2,7 @@ package respondio
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,17 @@ func (echoAgent) Turn(_ context.Context, m core.Message) ([]core.ContentBlock, e
 
 func echoHandler() core.Handler {
 	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
+}
+
+// failingAgent stands for an agent that exits before it replies.
+type failingAgent struct{}
+
+func (failingAgent) Turn(context.Context, core.Message) ([]core.ContentBlock, error) {
+	return nil, errors.New("the agent exited before it replied")
+}
+
+func failingHandler() core.Handler {
+	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), failingAgent{})
 }
 
 // api is a stand-in for respond.io's REST API, recording what reached it.
@@ -190,6 +202,22 @@ func TestConcurrentWebhooksEachReachTheirOwnContact(t *testing.T) {
 	paths[a.next(t).path] = true
 	if !paths["/contact/id:111/message"] || !paths["/contact/id:222/message"] {
 		t.Fatalf("paths called = %v, want one call per contact", paths)
+	}
+	a.silent(t)
+}
+
+func TestAFailedTurnLeavesACommentAndNoMessage(t *testing.T) {
+	a := newAPI(t)
+	h := &webhook{secret: secret, core: failingHandler(), client: a.client()}
+	body := payload(eventReceived)
+	post(t, h, body, sign(body, secret))
+
+	got := a.next(t)
+	if got.path != "/contact/id:12345/comment" {
+		t.Fatalf("API call = %+v, want an internal comment on contact 12345", got)
+	}
+	if !strings.Contains(got.body, "the agent exited before it replied") {
+		t.Fatalf("comment body = %s, does not carry the reason the turn failed", got.body)
 	}
 	a.silent(t)
 }

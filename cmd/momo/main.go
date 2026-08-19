@@ -27,6 +27,9 @@ const healthPath = "/healthz"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Code that reports a failure it is not given a logger for, such as a channel
+	// whose own report failed, writes to the default logger.
+	slog.SetDefault(log)
 	if err := run(log); err != nil {
 		log.Error("momo stopped", "error", err)
 		os.Exit(1)
