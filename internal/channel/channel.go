@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistory"
 )
 
 // Route is an HTTP endpoint a channel needs momo to serve. Channels that fetch
@@ -41,8 +42,14 @@ type Config struct {
 // channel's lifetime: momo cancels it when it begins shutting down, and a
 // channel releases whatever it holds — open streams, goroutines, clients — when
 // that happens. The process decides when that is; a channel never watches for
-// it itself.
-type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
+// it itself. The recorder is the optional session-history extension, and is nil
+// when the operator did not enable it.
+type Factory func(
+	lifetime context.Context,
+	decode Decoder,
+	h core.Handler,
+	r sessionhistory.Recorder,
+) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -83,7 +90,12 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Config, h core.Handler) ([]Instance, error) {
+func Build(
+	lifetime context.Context,
+	configs map[string]Config,
+	h core.Handler,
+	r sessionhistory.Recorder,
+) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -94,7 +106,10 @@ func Build(lifetime context.Context, configs map[string]Config, h core.Handler) 
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}))
+		// Pacing belongs to a reply, so only the handler is wrapped in it; a record
+		// produces no reply.
+		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}),
+			sessionhistory.Qualified(name, r))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

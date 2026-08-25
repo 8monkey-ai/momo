@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -327,5 +328,156 @@ func TestNewRefusesAnUnusableConfiguration(t *testing.T) {
 				t.Fatal("New succeeded, want an error")
 			}
 		})
+	}
+}
+
+// prompted sends one prompt and answers every emit call it made.
+func prompted(t *testing.T, h *Harness, conversation, text string) [][]core.ContentBlock {
+	t.Helper()
+	var calls [][]core.ContentBlock
+	if err := h.Prompt(context.Background(), conversation, core.Text(text), func(content []core.ContentBlock) error {
+		calls = append(calls, content)
+		return nil
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	return calls
+}
+
+// TestPromptRunsTheWholeLifecycle pins that the prompt port is the whole
+// operation: the conversation's directory, the process, the session and the
+// prompt, with the reply streamed out as it arrives.
+func TestPromptRunsTheWholeLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace")
+	t.Setenv("STUBAGENT_TRACE", path)
+	h, root := harness(t)
+
+	calls := prompted(t, h, "respondio:1", "/store-user hi")
+
+	if len(calls) != 2 || calls[0][0].Text != "hello from\n\n" || calls[1][0].Text != "the stub agent" {
+		t.Fatalf("emitted %+v, want the two chunks of the stub agent", calls)
+	}
+	dir := filepath.Join(root, dirName("respondio:1"))
+	if _, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("the conversation directory is missing: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the stub agent wrote no trace: %v", err)
+	}
+	wantTrace(t, strings.Split(strings.TrimRight(string(raw), "\n"), "\n"), []string{
+		"session/list\t" + dir,
+		"session/new\t" + dir + "\tstub-session-0",
+	})
+}
+
+func TestATurnAndAPromptShareTheSessionOfTheConversation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace")
+	t.Setenv("STUBAGENT_TRACE", path)
+	h, root := harness(t)
+
+	turn(t, h, "respondio:1")
+	prompted(t, h, "respondio:1", "/store-assistant hi")
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the stub agent wrote no trace: %v", err)
+	}
+	dir := filepath.Join(root, dirName("respondio:1"))
+	wantTrace(t, strings.Split(strings.TrimRight(string(raw), "\n"), "\n"), []string{
+		"session/list\t" + dir,
+		"session/new\t" + dir + "\tstub-session-0",
+		"session/list\t" + dir,
+		"session/resume\tstub-session-0",
+	})
+}
+
+// held answers a listener the stub agent's prompts dial, and the connections it
+// accepts, so a test decides when a prompt is released.
+func held(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	return l
+}
+
+func TestPromptFailsWhenItPassesTheTurnTimeout(t *testing.T) {
+	l := held(t)
+	h, err := New(discard(), decoder(fmt.Sprintf("command: [%q]\ndata_dir: %q\nturn_timeout: 200ms\n", stub, t.TempDir())))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The prompt is never released, so only the timeout can end it.
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+	}()
+
+	if err := h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), func([]core.ContentBlock) error { return nil }); err == nil {
+		t.Fatal("Prompt succeeded, want the turn timeout to end it")
+	}
+}
+
+// TestTwoPromptsOfOneConversationDoNotRunAtTheSameTime holds a turn and a record
+// of one conversation apart, so they never work on the same session at once.
+func TestTwoPromptsOfOneConversationDoNotRunAtTheSameTime(t *testing.T) {
+	l := held(t)
+	h, _ := harness(t)
+
+	failed := make(chan error, 2)
+	go func() {
+		m := core.Message{Conversation: "respondio:1", Content: core.Text("hi")}
+		failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
+	}()
+	go func() {
+		failed <- h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), func([]core.ContentBlock) error { return nil })
+	}()
+
+	first, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := io.ReadFull(first, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	// While the first prompt is held, the second one must still be waiting for the
+	// conversation, so nothing dials the listener.
+	if err := l.(*net.TCPListener).SetDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := l.Accept(); err == nil {
+		_ = second.Close()
+		t.Fatal("two prompts of one conversation reached the agent at the same time")
+	}
+	if err := l.(*net.TCPListener).SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := first.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing the first prompt: %v", err)
+	}
+	_ = first.Close()
+	second, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := io.ReadFull(second, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	if _, err := second.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing the second prompt: %v", err)
+	}
+	_ = second.Close()
+	for range 2 {
+		if err := <-failed; err != nil {
+			t.Fatalf("prompt: %v", err)
+		}
 	}
 }

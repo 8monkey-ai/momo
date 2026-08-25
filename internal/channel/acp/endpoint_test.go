@@ -19,6 +19,7 @@ import (
 
 	wire "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistory"
 )
 
 // echoAgent answers with the content the message carried, so a test drives the
@@ -583,7 +584,7 @@ func TestNewRejectsUnusableSettings(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error naming the unusable setting")
 			}
 		})
@@ -599,12 +600,52 @@ func TestNewServesTheConfiguredPath(t *testing.T) {
 		s.Token = token
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{})
+	c, err := New(context.Background(), decode, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	routes := c.Routes()
 	if len(routes) != 1 || routes[0].Path != "/v1/acp" {
 		t.Fatalf("routes = %+v, want the single default path /v1/acp", routes)
+	}
+}
+
+type unused struct{ t *testing.T }
+
+func (u unused) Record(context.Context, core.Message, sessionhistory.Role) error {
+	u.t.Error("the ACP channel used the session-history recorder")
+	return nil
+}
+
+func TestTheChannelIgnoresTheSessionHistoryRecorder(t *testing.T) {
+	decode := func(v any) error {
+		v.(*settings).Token = token
+		return nil
+	}
+	c, err := New(context.Background(), decode, echoHandler(), unused{t: t})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(c.Routes()[0].Handler)
+	t.Cleanup(srv.Close)
+	h := &harness{url: srv.URL}
+	connID, sessionID, _, sessionStream := h.session(t)
+
+	status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt,
+		`{"sessionId":"`+sessionID+`","prompt":[{"type":"text","text":"hi"}]}`),
+		connID: connID, sessionID: sessionID}), http.StatusAccepted)
+
+	// The reply of the echo handler arrives, so the prompt ran the ordinary turn.
+	var completed wire.PromptResult
+	for {
+		resp := sessionStream.next(t)
+		if resp.Result == nil {
+			continue
+		}
+		unmarshalResult(t, resp, &completed)
+		break
+	}
+	if completed.StopReason != "end_turn" {
+		t.Fatalf("stopReason = %q, want \"end_turn\"", completed.StopReason)
 	}
 }

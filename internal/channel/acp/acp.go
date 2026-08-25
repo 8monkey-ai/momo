@@ -13,6 +13,7 @@ import (
 
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistory"
 )
 
 func init() {
@@ -32,8 +33,10 @@ type acp struct {
 func (a acp) Routes() []channel.Route { return a.routes }
 
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
-// with every request authenticated by a bearer token.
-func New(lifetime context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+// with every request authenticated by a bearer token. A prompt on this channel is
+// a turn, so the agent's session already holds it and the session-history
+// recorder has nothing to add.
+func New(lifetime context.Context, decode channel.Decoder, h core.Handler, _ sessionhistory.Recorder) (channel.Channel, error) {
 	s := settings{Path: "/v1/acp", ConnectionGrace: 5 * time.Minute}
 	if err := decode(&s); err != nil {
 		return nil, err

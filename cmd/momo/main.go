@@ -18,6 +18,7 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistory"
 
 	_ "github.com/8monkey-ai/momo/internal/channel/acp"
 	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
@@ -111,7 +112,16 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a))
+	// The extension prompts the same harness the turns run on, so a record and a
+	// turn of one conversation share its session.
+	var history sessionhistory.Recorder
+	if cfg.Extensions.SessionHistoryEnabled {
+		history, err = sessionhistory.New(log, cfg.Extensions.SessionHistory, a)
+		if err != nil {
+			return fmt.Errorf("extensions.session_history: %w", err)
+		}
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history)
 	if err != nil {
 		return err
 	}

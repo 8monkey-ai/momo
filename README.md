@@ -89,6 +89,16 @@ agent:
   # How long one turn may take. Must be positive. Default: "30m"
   turn_timeout: "30m"
 
+# Optional momo extensions. An extension is off until its block is there.
+extensions:
+  # Keeps the agent's session complete while a human operator answers a
+  # conversation. Both commands are required when this block is there.
+  session_history:
+    # Slash command the agent stores a contact's message with.
+    record_user_message_command: "/add-user-message"
+    # Slash command the agent stores an answer to the contact with.
+    record_assistant_message_command: "/add-assistant-message"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -97,6 +107,11 @@ channels:
     sent_secret: "paste the message.sent signing key"
     # API token momo sends replies with. Required.
     api_token: "paste the respond.io API access token"
+    # respond.io user id momo answers as. While another user holds a contact,
+    # momo records the conversation instead of answering it. Needs the
+    # extensions.session_history block. Default: 0, which keeps every
+    # conversation with momo
+    assignee_id: 0
     # Base URL of the respond.io API. Default: "https://api.respond.io/v2"
     api_url: "https://api.respond.io/v2"
     # Paths momo serves the two webhooks on.
@@ -143,7 +158,8 @@ channels:
 
 The `agent` block is required: momo answers a message with an agent, and it has nothing
 else to answer with. Leave out both channel blocks and momo starts with no channel, serving
-only `/healthz`.
+only `/healthz`. The `extensions` block is optional: a deployment that serves ACP clients
+only, or one where no human operator answers a conversation, omits it.
 
 The keys and the ACP token are secrets. Keep the file readable only by the user momo runs as:
 
@@ -189,6 +205,53 @@ momo answers an incoming message with one call to respond.io's send-a-message AP
 `POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
 messages (`message.sent`) are recorded only: they include momo's own replies, and
 answering them would make momo talk to itself.
+
+### Hand a conversation to a human operator
+
+A human operator can take a conversation over without the agent losing what was said. Turn
+on the `extensions.session_history` extension and set `assignee_id` to the respond.io user
+momo answers as:
+
+```yaml
+extensions:
+  session_history:
+    record_user_message_command: "/add-user-message"
+    record_assistant_message_command: "/add-assistant-message"
+
+channels:
+  respondio:
+    received_secret: "paste the message.received signing key"
+    sent_secret: "paste the message.sent signing key"
+    api_token: "paste the respond.io API access token"
+    assignee_id: 42
+```
+
+While a user other than `assignee_id` holds the contact, momo answers nothing. The contact's
+messages go into the agent's session as user messages, and what the operator sends goes in
+as assistant messages, so the agent knows the whole conversation when the operator assigns
+it back to momo.
+
+What decides the action:
+
+- A conversation with no assignee always belongs to momo, and its messages get an agent
+  answer.
+- A zero or absent `assignee_id` keeps every conversation with momo as well, including a
+  conversation assigned to another user.
+- An outgoing message is recorded on its sender, not on the assignee: respond.io reports a
+  message an operator wrote as `user` and one a workflow sent as `workflow`, and both are
+  recorded as assistant messages. momo's own API replies carry another sender and are not
+  recorded again, because the agent's session already holds them.
+- A record that fails appears in momo's log only. Neither the contact nor the conversation
+  gets a message about it.
+- A nonzero `assignee_id` without the `extensions.session_history` block is refused at
+  startup: momo would stop answering without keeping the conversation.
+
+The extension sends each record to the agent as a standard ACP `session/prompt` request
+holding the configured slash command and the message text on one line. It is no ACP
+protocol extension, so the agent you configure must serve both slash commands itself. momo
+cannot ask an agent which commands it knows, and an agent answers an unknown command like
+any other prompt. momo discards that answer and writes it to its debug log, which is the
+place to look when a record seems to have no effect.
 
 ## Connect an ACP client
 

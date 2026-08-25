@@ -160,3 +160,57 @@ func TestADeliveryMomoCannotPaceIsRefused(t *testing.T) {
 		})
 	}
 }
+
+const sessionHistoryBlock = "extensions:\n  session_history:\n" +
+	"    record_user_message_command: \"/add-user-message\"\n" +
+	"    record_assistant_message_command: \"/add-assistant-message\"\n"
+
+func TestAnAbsentExtensionBlockLeavesTheExtensionDisabled(t *testing.T) {
+	cfg := load(t, "channels:\n  acp:\n    token: a\n")
+	if cfg.Extensions.SessionHistoryEnabled {
+		t.Fatal("session history is enabled, want it disabled without its block")
+	}
+}
+
+func TestTheSessionHistoryBlockIsEnabledAndDecodedForTheExtension(t *testing.T) {
+	cfg := load(t, sessionHistoryBlock)
+	if !cfg.Extensions.SessionHistoryEnabled {
+		t.Fatal("session history is disabled, want it enabled by its block")
+	}
+	var s struct {
+		User      string `yaml:"record_user_message_command"`
+		Assistant string `yaml:"record_assistant_message_command"`
+	}
+	if err := cfg.Extensions.SessionHistory(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.User != "/add-user-message" || s.Assistant != "/add-assistant-message" {
+		t.Fatalf("commands = %+v, want the two configured commands", s)
+	}
+}
+
+// TestAnEmptySessionHistoryBlockIsStillEnabled pins where an incomplete extension
+// is refused: the block is present, so the extension is enabled, and its own
+// constructor reports the missing commands.
+func TestAnEmptySessionHistoryBlockIsStillEnabled(t *testing.T) {
+	cfg := load(t, "extensions:\n  session_history:\n")
+	if !cfg.Extensions.SessionHistoryEnabled {
+		t.Fatal("session history is disabled, want a present block to enable it")
+	}
+}
+
+func TestAnUnknownExtensionIsReported(t *testing.T) {
+	if _, err := parse([]byte("extensions:\n  session_hisory:\n")); err == nil {
+		t.Fatal("parse succeeded, want an error naming the unknown extension")
+	}
+}
+
+func TestAnUnknownSessionHistorySettingIsReported(t *testing.T) {
+	cfg := load(t, "extensions:\n  session_history:\n    record_operator_message_command: \"/add\"\n")
+	var s struct {
+		User string `yaml:"record_user_message_command"`
+	}
+	if err := cfg.Extensions.SessionHistory(&s); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}
