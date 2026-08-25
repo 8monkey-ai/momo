@@ -87,7 +87,7 @@ func TestHandoverRoutesAnEventByOwnerAndSender(t *testing.T) {
 		"another assignee holds the contact": {
 			assigneeID: 7,
 			body:       body(eventReceived, `{"id":99}`, ""),
-			want:       call{direction: "recorded", role: core.RoleUser},
+			want:       call{direction: "recorded", role: core.Role("user")},
 		},
 		"momo holds the contact": {
 			assigneeID: 7,
@@ -107,12 +107,12 @@ func TestHandoverRoutesAnEventByOwnerAndSender(t *testing.T) {
 		"an operator sent the message": {
 			assigneeID: 7,
 			body:       body(eventSent, `{"id":99}`, `{"source":"user"}`),
-			want:       call{direction: "recorded", role: core.RoleAssistant},
+			want:       call{direction: "recorded", role: core.Role("assistant")},
 		},
 		"a workflow sent the message": {
 			assigneeID: 7,
 			body:       body(eventSent, `{"id":7}`, `{"source":"workflow"}`),
-			want:       call{direction: "recorded", role: core.RoleAssistant},
+			want:       call{direction: "recorded", role: core.Role("assistant")},
 		},
 		"momo sent the message through the API": {
 			assigneeID: 7,
@@ -139,11 +139,11 @@ func TestHandoverRoutesAnEventByOwnerAndSender(t *testing.T) {
 		},
 		"no assignee_id and an operator's message": {
 			body: body(eventSent, `{"id":99}`, `{"source":"user"}`),
-			want: call{direction: "recorded", role: core.RoleAssistant},
+			want: call{direction: "recorded", role: core.Role("assistant")},
 		},
 		"no assignee_id and a workflow's message": {
 			body: body(eventSent, "", `{"source":"workflow"}`),
-			want: call{direction: "recorded", role: core.RoleAssistant},
+			want: call{direction: "recorded", role: core.Role("assistant")},
 		},
 		"no assignee_id and momo's own message": {
 			body: body(eventSent, "", `{"source":"api"}`),
@@ -156,7 +156,7 @@ func TestHandoverRoutesAnEventByOwnerAndSender(t *testing.T) {
 			post(t, h, tc.body, sign(tc.body, secret))
 
 			want := tc.want
-			want.message = core.Message{Conversation: "12345", Content: core.Text("hello")}
+			want.message = core.Message{Conversation: "12345", Content: []core.ContentBlock{{Type: "text", Text: "hello"}}}
 			select {
 			case got := <-c.calls:
 				if !reflect.DeepEqual(got, want) {
@@ -238,7 +238,7 @@ func TestDispatch(t *testing.T) {
 			}
 			select {
 			case got := <-c.calls:
-				want := call{direction: tc.direction, message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+				want := call{direction: tc.direction, message: core.Message{Conversation: "12345", Content: []core.ContentBlock{{Type: "text", Text: "hello"}}}}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("core called with %+v, want %+v", got, want)
 				}
