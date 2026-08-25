@@ -56,6 +56,14 @@ type Message struct {
 	Content      []ContentBlock
 }
 
+// Role is who a recorded message came from, in the agent session's terms.
+type Role string
+
+const (
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+)
+
 // Reply sends a reply on the channel the message arrived on. The destination is
 // fixed when the message arrives, so it is not a parameter. It is safe to call
 // from any goroutine.
@@ -66,9 +74,14 @@ type Reply func(ctx context.Context, content []ContentBlock) error
 // the incoming one has something to answer. Received logs a failed turn and
 // returns it, so the channel that received the message reports it on its own
 // transport as well.
+//
+// Record adds a message to the conversation's session without answering it, for a
+// message the contact exchanged with somebody else, such as a human operator. It
+// returns nothing, because the channel cannot recover from a failed record.
 type Handler interface {
 	Received(ctx context.Context, m Message, reply Reply) error
 	Sent(ctx context.Context, m Message)
+	Record(ctx context.Context, m Message, role Role)
 }
 
 // Emit delivers one part of a turn's reply. The agent calls it as the content
@@ -81,6 +94,7 @@ type Emit func(content []ContentBlock) error
 // core, so the core carries no protocol and no process.
 type Agent interface {
 	Turn(ctx context.Context, m Message, emit Emit) error
+	Record(ctx context.Context, m Message, role Role) error
 }
 
 // NewHandler answers each incoming message with the reply of one agent turn, on
@@ -106,6 +120,13 @@ func (h handler) Received(ctx context.Context, m Message, reply Reply) error {
 
 func (h handler) Sent(_ context.Context, m Message) {
 	h.log.Info("message sent", attrs(m)...)
+}
+
+func (h handler) Record(ctx context.Context, m Message, role Role) {
+	h.log.Info("message recorded", append(attrs(m), "role", string(role))...)
+	if err := h.agent.Record(ctx, m, role); err != nil {
+		h.log.Error("record failed", "conversation", m.Conversation, "role", string(role), "error", err)
+	}
 }
 
 // attrs reports a message's block types and its text, and never the base64 data

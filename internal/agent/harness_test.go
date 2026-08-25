@@ -62,6 +62,111 @@ func harness(t *testing.T) (*Harness, string) {
 	return h, root
 }
 
+// recordingHarness answers a harness configured with the record commands the test
+// states, and nothing more.
+func recordingHarness(t *testing.T, commands string) *Harness {
+	t.Helper()
+	body := fmt.Sprintf("command: [%q]\ndata_dir: %q\n", stub, t.TempDir()) + commands
+	h, err := New(discard(), decoder(body))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return h
+}
+
+// noSubprocess fails when the stub agent reported a pid, which it does as soon as
+// it starts.
+func noSubprocess(t *testing.T) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Setenv("STUBAGENT_PID_FILE", pidFile)
+	t.Cleanup(func() {
+		if _, err := os.Stat(pidFile); err == nil {
+			t.Fatal("an agent subprocess was started, want none")
+		}
+	})
+}
+
+// TestRecordSendsTheConfiguredCommandOnOneLine pins the prompt a record produces:
+// the command of the role, then the message text with every newline replaced, so
+// the command keeps its argument.
+func TestRecordSendsTheConfiguredCommandOnOneLine(t *testing.T) {
+	for name, tc := range map[string]struct {
+		commands string
+		role     core.Role
+		want     string
+	}{
+		"a user message": {
+			commands: "record_user_message_command: /store-user\n",
+			role:     core.RoleUser,
+			want:     "/store-user hello there",
+		},
+		"an assistant message": {
+			commands: "record_assistant_message_command: /store-assistant\n",
+			role:     core.RoleAssistant,
+			want:     "/store-assistant hello there",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			promptFile := filepath.Join(t.TempDir(), "prompt")
+			t.Setenv("STUBAGENT_PROMPT_FILE", promptFile)
+			h := recordingHarness(t, tc.commands)
+			m := core.Message{Conversation: "respondio:1", Content: core.Text("hello\nthere")}
+
+			if err := h.Record(context.Background(), m, tc.role); err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			raw, err := os.ReadFile(promptFile)
+			if err != nil {
+				t.Fatalf("the stub agent got no prompt: %v", err)
+			}
+			if got := strings.TrimRight(string(raw), "\n"); got != tc.want {
+				t.Fatalf("prompt = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordWithoutItsCommandFails pins that a role momo has no command for is
+// refused before an agent runs, so an operator who configures one command does not
+// get an agent started for the other role.
+func TestRecordWithoutItsCommandFails(t *testing.T) {
+	for name, tc := range map[string]struct {
+		commands string
+		role     core.Role
+	}{
+		"no command at all":             {commands: "", role: core.RoleUser},
+		"only the assistant command":    {commands: "record_assistant_message_command: /store-assistant\n", role: core.RoleUser},
+		"only the user command":         {commands: "record_user_message_command: /store-user\n", role: core.RoleAssistant},
+		"an empty command for the role": {commands: "record_user_message_command: \"\"\n", role: core.RoleUser},
+	} {
+		t.Run(name, func(t *testing.T) {
+			noSubprocess(t)
+			h := recordingHarness(t, tc.commands)
+			m := core.Message{Conversation: "respondio:1", Content: core.Text("hello")}
+
+			if err := h.Record(context.Background(), m, tc.role); err == nil {
+				t.Fatal("Record succeeded, want an error naming the missing command")
+			}
+		})
+	}
+}
+
+// TestRecordOfAMessageWithoutTextFails pins what this version records: text only,
+// and an image carries none.
+func TestRecordOfAMessageWithoutTextFails(t *testing.T) {
+	noSubprocess(t)
+	h := recordingHarness(t, "record_user_message_command: /store-user\n")
+	m := core.Message{
+		Conversation: "respondio:1",
+		Content:      []core.ContentBlock{{Type: "image", Data: "AAAA", MimeType: "image/png"}},
+	}
+
+	if err := h.Record(context.Background(), m, core.RoleUser); err == nil {
+		t.Fatal("Record succeeded, want an error about the missing text")
+	}
+}
+
 // emitted runs one turn and answers every emit call it made, so a test states
 // the streamed reply as literals.
 func emitted(t *testing.T, h *Harness, conversation string) [][]core.ContentBlock {

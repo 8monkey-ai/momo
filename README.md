@@ -88,6 +88,13 @@ agent:
   data_dir: "/var/lib/momo/conversations"
   # How long one turn may take. Must be positive. Default: "30m"
   turn_timeout: "30m"
+  # Command that puts a contact message a human operator answered into the
+  # conversation's session. No default: a deployment that records nothing needs
+  # it not.
+  record_user_message_command: "/add-user-message"
+  # Command that puts an operator's or a workflow's message into the
+  # conversation's session. No default.
+  record_assistant_message_command: "/add-assistant-message"
 
 channels:
   respondio:
@@ -99,6 +106,9 @@ channels:
     api_token: "paste the respond.io API access token"
     # Base URL of the respond.io API. Default: "https://api.respond.io/v2"
     api_url: "https://api.respond.io/v2"
+    # respond.io user id momo answers as. 0, or absent, keeps every conversation
+    # with momo. Default: 0
+    assignee_id: 0
     # Paths momo serves the two webhooks on.
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
@@ -186,9 +196,61 @@ momo accepts and ignores them, so respond.io does not retry them and new event t
 respond.io adds later need no upgrade on your side.
 
 momo answers an incoming message with one call to respond.io's send-a-message API,
-`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
-messages (`message.sent`) are recorded only: they include momo's own replies, and
-answering them would make momo talk to itself.
+`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. An
+outgoing message (`message.sent`) is never answered: answering momo's own reply would
+make momo talk to itself.
+
+## Hand a conversation to a human
+
+A human operator can take a conversation over, answer it, and hand it back, and the
+agent still reads the whole conversation. momo puts the messages it did not produce
+into the conversation's session with the two `agent` commands, and answers nothing
+while the operator holds the conversation.
+
+Set `assignee_id` to the respond.io user momo answers as, and configure both record
+commands:
+
+```yaml
+agent:
+  command: ["claude-code-acp"]
+  data_dir: "/var/lib/momo/conversations"
+  record_user_message_command: "/add-user-message"
+  record_assistant_message_command: "/add-assistant-message"
+
+channels:
+  respondio:
+    received_secret: "paste the message.received signing key"
+    sent_secret: "paste the message.sent signing key"
+    api_token: "paste the respond.io API access token"
+    assignee_id: 4711
+```
+
+What momo does with each message:
+
+- A zero or absent `assignee_id` keeps every conversation with momo, conversations
+  assigned to another user included.
+- A conversation with no assignee always belongs to momo, and its messages get an
+  agent answer.
+- With `assignee_id` set, momo does not answer while a different assignee holds the
+  conversation.
+- A contact message is recorded as a user message while another assignee holds the
+  conversation, so the agent reads what the contact wrote to the operator.
+- An outgoing message a user or a workflow wrote is recorded as an assistant message,
+  whoever holds the conversation.
+- momo's own API replies are not recorded again: the session already holds them.
+- A record that fails appears in the log only. The contact reads nothing, and the
+  conversation gets no comment.
+
+The commands are yours to choose, and the agent has to serve them. momo sends one line,
+the command and the message text, with every newline in the text replaced by a space.
+This version records text only.
+
+- A deployment that uses the ACP channel alone can leave both command settings out.
+- A record for a role with no command fails before an agent starts, and the message is
+  not in the session.
+- A command the agent does not serve looks to momo like a command it serves, because an
+  agent answers both the same way. Read momo's debug log, which holds what the agent
+  streamed for each record, to diagnose one.
 
 ## Connect an ACP client
 
@@ -280,6 +342,11 @@ One turn runs at a time for each conversation, and one conversation is one conta
 channel. A second message for that conversation waits for the turn in progress. A message
 for another conversation does not wait, and the same contact id on two channels is two
 conversations. A turn that reaches `turn_timeout` fails, and the subprocess is stopped.
+
+A recorded message takes the same path with no reply to deliver: the same timeout, the same
+conversation lock, the same directory, and the same session, with the role's command as the
+prompt. What the agent streams for a record reaches the debug log and nobody else. A record
+and a turn of one conversation never run at the same time.
 
 Each conversation gets one directory under `data_dir`, named after the channel and the
 contact. momo creates it empty, and the agent owns everything in it. momo keeps no storage

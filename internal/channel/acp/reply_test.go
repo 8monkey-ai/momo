@@ -188,6 +188,8 @@ func (blocksAgent) Turn(_ context.Context, _ core.Message, emit core.Emit) error
 	return emit(core.Text("second"))
 }
 
+func (blocksAgent) Record(context.Context, core.Message, core.Role) error { return nil }
+
 // TestEachDeliveredMessageCarriesItsOwnMessageID pins what a client joins: the
 // blocks of one message share an id, and the next message starts a new one.
 func TestEachDeliveredMessageCarriesItsOwnMessageID(t *testing.T) {

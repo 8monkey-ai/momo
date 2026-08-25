@@ -34,6 +34,12 @@ const (
 	eventSent     = "message.sent"
 
 	textMessage = "text"
+
+	// Sources of an outgoing message momo records: an operator writes one as "user",
+	// and a respond.io workflow as "workflow". momo's own replies carry another
+	// source, and the agent session already holds them.
+	senderUser     = "user"
+	senderWorkflow = "workflow"
 )
 
 type settings struct {
@@ -43,6 +49,9 @@ type settings struct {
 	SentPath       string `yaml:"sent_path"`
 	APIToken       string `yaml:"api_token"`
 	APIURL         string `yaml:"api_url"`
+	// AssigneeID is the respond.io user momo answers as. Zero keeps every
+	// conversation with momo, whoever holds it.
+	AssigneeID int64 `yaml:"assignee_id"`
 }
 
 type respondio struct {
@@ -72,21 +81,27 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	}
 	c := &client{url: s.APIURL, token: s.APIToken, http: &http.Client{Timeout: 30 * time.Second}}
 	return respondio{routes: []channel.Route{
-		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c}},
-		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c}},
+		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c, assigneeID: s.AssigneeID}},
+		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c, assigneeID: s.AssigneeID}},
 	}}, nil
 }
 
 type webhook struct {
-	secret string
-	core   core.Handler
-	client *client
+	secret     string
+	core       core.Handler
+	client     *client
+	assigneeID int64
 }
 
 type event struct {
 	EventType string `json:"event_type"`
 	Contact   struct {
 		ID int64 `json:"id"`
+		// A pointer tells an unassigned contact, which respond.io reports as an
+		// omitted or null member, from one an assignee holds.
+		Assignee *struct {
+			ID int64 `json:"id"`
+		} `json:"assignee"`
 	} `json:"contact"`
 	Message struct {
 		Message struct {
@@ -94,6 +109,11 @@ type event struct {
 			Text string `json:"text"`
 		} `json:"message"`
 	} `json:"message"`
+	// The official schema does not require a sender, so an event without one is not
+	// malformed.
+	Sender *struct {
+		Source string `json:"source"`
+	} `json:"sender"`
 }
 
 func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -135,14 +155,38 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
+		if h.humanOwned(ev) {
+			// A human operator answers this conversation, so momo follows it and stays
+			// silent.
+			h.core.Record(ctx, m, core.RoleUser)
+			return
+		}
 		if err := h.core.Received(ctx, m, h.client.reply(contactID)); err != nil {
 			h.report(ctx, contactID, err)
 		}
 	case eventSent:
-		// An outgoing message is momo's own reply as often as an operator's; nothing
-		// answers it.
+		if recordable(ev) {
+			h.core.Record(ctx, m, core.RoleAssistant)
+			return
+		}
+		// What is left is momo's own reply, which the agent session already holds.
 		h.core.Sent(ctx, m)
 	}
+}
+
+// humanOwned tells whether somebody other than momo holds the contact.
+func (h *webhook) humanOwned(ev event) bool {
+	return h.assigneeID != 0 && ev.Contact.Assignee != nil && ev.Contact.Assignee.ID != h.assigneeID
+}
+
+// recordable tells whether the workspace, and not momo's API call, wrote an
+// outgoing message. The sender says who wrote it; the assignee says only who holds
+// the contact now.
+func recordable(ev event) bool {
+	if ev.Sender == nil {
+		return false
+	}
+	return ev.Sender.Source == senderUser || ev.Sender.Source == senderWorkflow
 }
 
 // report tells the operators of the conversation that the message got no reply.

@@ -99,6 +99,7 @@ func deliver(conversation string, failed *error) Factory {
 			*failed = err
 		}
 		h.Sent(context.Background(), m)
+		h.Record(context.Background(), m, core.RoleUser)
 		return fixed{}, nil
 	}
 }
@@ -106,6 +107,7 @@ func deliver(conversation string, failed *error) Factory {
 type recorder struct {
 	received []string
 	sent     []string
+	recorded []string
 	err      error
 }
 
@@ -116,6 +118,23 @@ func (r *recorder) Received(_ context.Context, m core.Message, _ core.Reply) err
 
 func (r *recorder) Sent(_ context.Context, m core.Message) {
 	r.sent = append(r.sent, m.Conversation)
+}
+
+func (r *recorder) Record(_ context.Context, m core.Message, _ core.Role) {
+	r.recorded = append(r.recorded, m.Conversation)
+}
+
+func TestRecordIsQualifiedWithTheChannelName(t *testing.T) {
+	isolateFactories(t)
+	Register("respondio", deliver("123", nil))
+	got := &recorder{}
+
+	if _, err := Build(context.Background(), configured("respondio"), got); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(got.recorded) != 1 || got.recorded[0] != "respondio:123" {
+		t.Fatalf("recorded = %v, want [respondio:123]", got.recorded)
+	}
 }
 
 func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
@@ -191,6 +210,8 @@ type twoParagraphs struct{}
 func (twoParagraphs) Turn(_ context.Context, _ core.Message, emit core.Emit) error {
 	return emit(core.Text("first\n\nsecond"))
 }
+
+func (twoParagraphs) Record(context.Context, core.Message, core.Role) error { return nil }
 
 // TestEachChannelDeliversWithItsOwnSettings pins that delivery belongs to the
 // channel: one reply, two channels, two different results in the same run.

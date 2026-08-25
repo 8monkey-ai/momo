@@ -34,6 +34,8 @@ func (echoAgent) Turn(_ context.Context, m core.Message, emit core.Emit) error {
 	return nil
 }
 
+func (echoAgent) Record(context.Context, core.Message, core.Role) error { return nil }
+
 func echoHandler() core.Handler {
 	return core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), echoAgent{})
 }
@@ -44,6 +46,8 @@ type failingAgent struct{}
 func (failingAgent) Turn(context.Context, core.Message, core.Emit) error {
 	return errors.New("the agent exited before it replied")
 }
+
+func (failingAgent) Record(context.Context, core.Message, core.Role) error { return nil }
 
 const token = "operator-token"
 
@@ -56,6 +60,9 @@ func (c capture) Received(_ context.Context, m core.Message, _ core.Reply) error
 	return nil
 }
 func (c capture) Sent(_ context.Context, m core.Message) { c.received <- m }
+
+// Record is unused: the ACP channel records nothing, because a prompt is a turn.
+func (c capture) Record(_ context.Context, m core.Message, _ core.Role) { c.received <- m }
 
 type harness struct {
 	url   string

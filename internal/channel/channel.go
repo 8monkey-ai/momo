@@ -67,6 +67,10 @@ func (q qualifying) Sent(ctx context.Context, m core.Message) {
 	q.h.Sent(ctx, q.qualify(m))
 }
 
+func (q qualifying) Record(ctx context.Context, m core.Message, role core.Role) {
+	q.h.Record(ctx, q.qualify(m), role)
+}
+
 // Register makes a channel available under the name operators use to configure
 // it. It is meant to be called from a package's init.
 func Register(name string, f Factory) {

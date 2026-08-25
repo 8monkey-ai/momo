@@ -72,6 +72,11 @@ func (d delivering) Received(ctx context.Context, m Message, reply Reply) error 
 
 func (d delivering) Sent(ctx context.Context, m Message) { d.handler.Sent(ctx, m) }
 
+// Record is not paced: a record produces no reply for a contact to read.
+func (d delivering) Record(ctx context.Context, m Message, role Role) {
+	d.handler.Record(ctx, m, role)
+}
+
 // queue delivers one turn's parts in order, on a goroutine of its own. Ordering
 // comes from that single consumer. A paragraph's pause does not block the agent,
 // which is still generating the rest of the reply.

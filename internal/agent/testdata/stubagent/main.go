@@ -30,6 +30,10 @@ type request struct {
 type params struct {
 	Cwd       string `json:"cwd"`
 	SessionID string `json:"sessionId"`
+	Prompt    []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"prompt"`
 }
 
 func main() {
@@ -203,6 +207,9 @@ func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return err
 	}
+	if err := reportPrompt(p); err != nil {
+		return err
+	}
 	if err := requestPermission(dec, enc, p.SessionID); err != nil {
 		return err
 	}
@@ -222,6 +229,29 @@ func prompt(dec *json.Decoder, enc *json.Encoder, req request) error {
 		return err
 	}
 	return lateChunk(enc, p.SessionID)
+}
+
+// reportPrompt appends the text of every prompt block to the file the test names,
+// one line for each block, so a test states the prompt momo sent as a literal.
+func reportPrompt(p params) error {
+	path := os.Getenv("STUBAGENT_PROMPT_FILE")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	for _, block := range p.Prompt {
+		if block.Type != "text" {
+			continue
+		}
+		if _, err := fmt.Fprintln(f, block.Text); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // lateChunk streams one chunk after the turn was answered, which v1 does not

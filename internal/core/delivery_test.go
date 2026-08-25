@@ -16,6 +16,8 @@ type generator func(emit Emit) error
 
 func (g generator) Turn(_ context.Context, _ Message, emit Emit) error { return g(emit) }
 
+func (generator) Record(context.Context, Message, Role) error { return nil }
+
 // recorder is a Reply that records every call, and fails from the call fails
 // names onwards.
 type recorder struct {
