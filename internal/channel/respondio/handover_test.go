@@ -164,7 +164,7 @@ func TestAnAssignedContactIsRecordedAndNotAnswered(t *testing.T) {
 
 	deliver(t, h.hook, payloadWith(eventReceived, `{"id":99}`, ""))
 
-	wantRecord(t, h, sessionhistory.RoleUser)
+	wantRecord(t, h, "user")
 	wantNothingSent(t, h)
 }
 
@@ -204,7 +204,7 @@ func TestTheSenderDecidesWhetherAnOutgoingMessageIsRecorded(t *testing.T) {
 			deliver(t, h.hook, payloadWith(eventSent, tc.assignee, tc.sender))
 
 			if tc.recorded {
-				wantRecord(t, h, sessionhistory.RoleAssistant)
+				wantRecord(t, h, "assistant")
 				return
 			}
 			wantCall(t, h, "sent")
@@ -243,7 +243,7 @@ func TestWithoutAnAssigneeIDOutgoingMessagesAreStillRecordedBySender(t *testing.
 			deliver(t, h.hook, payloadWith(eventSent, "", tc.sender))
 
 			if tc.recorded {
-				wantRecord(t, h, sessionhistory.RoleAssistant)
+				wantRecord(t, h, "assistant")
 				return
 			}
 			wantCall(t, h, "sent")
@@ -256,7 +256,7 @@ func TestAFailedRecordIsNotReportedToRespondio(t *testing.T) {
 
 	deliver(t, h.hook, payloadWith(eventReceived, `{"id":99}`, ""))
 
-	wantRecord(t, h, sessionhistory.RoleUser)
+	wantRecord(t, h, "user")
 	wantNothingSent(t, h)
 }
 

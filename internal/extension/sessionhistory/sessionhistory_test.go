@@ -88,6 +88,31 @@ func TestTheRoleSelectsTheConfiguredCommand(t *testing.T) {
 	}
 }
 
+func TestEachLineBreakBecomesOneSpace(t *testing.T) {
+	for name, text := range map[string]string{
+		"lf":   "hello\nthere",
+		"crlf": "hello\r\nthere",
+		"cr":   "hello\rthere",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &fake{}
+			r := recorderWith(t, discard(), p)
+
+			m := core.Message{Conversation: "respondio:123", Content: core.Text(text)}
+			if err := r.Record(context.Background(), m, RoleUser); err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			if len(p.calls) != 1 {
+				t.Fatalf("the prompter got %d calls, want 1", len(p.calls))
+			}
+			want := core.ContentBlock{Type: "text", Text: "/store-user hello there"}
+			if len(p.calls[0].content) != 1 || p.calls[0].content[0] != want {
+				t.Fatalf("prompt = %+v, want %+v", p.calls[0].content, want)
+			}
+		})
+	}
+}
+
 func TestTheQualifiedConversationReachesThePrompter(t *testing.T) {
 	p := &fake{}
 	r := recorderWith(t, discard(), p)

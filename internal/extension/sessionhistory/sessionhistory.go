@@ -64,9 +64,9 @@ type recorder struct {
 	commands map[Role]string
 }
 
-// Record sends the role's command with the message's text as its argument. The
-// command and its argument stay on one line, because a slash command ends at the
-// end of the line.
+// Record sends the role's command with the message's text as its argument. Every
+// line break becomes one space, because a slash command ends at the end of the
+// line.
 func (r recorder) Record(ctx context.Context, m core.Message, role Role) error {
 	command, known := r.commands[role]
 	if !known {
@@ -76,7 +76,7 @@ func (r recorder) Record(ctx context.Context, m core.Message, role Role) error {
 	if text == "" {
 		return errors.New("a message with no text cannot be recorded")
 	}
-	prompt := core.Text(command + " " + strings.ReplaceAll(text, "\n", " "))
+	prompt := core.Text(command + " " + strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text))
 	return r.prompter.Prompt(ctx, m.Conversation, prompt, r.discard(m.Conversation))
 }
 
