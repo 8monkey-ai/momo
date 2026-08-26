@@ -217,6 +217,39 @@ func post(t *testing.T, address string) {
 	}
 }
 
+// Nothing would be built for a misspelled name, so it would fail silently.
+func TestAnUnknownExtensionIsReported(t *testing.T) {
+	extensions := map[string]func(any) error{
+		"session-histry-sync": func(any) error { return nil },
+	}
+	_, err := buildHistory(discard(), extensions, nil)
+	if err == nil {
+		t.Fatal("buildHistory succeeded, want an error naming the unknown extension")
+	}
+	if !strings.Contains(err.Error(), "session-history-sync") {
+		t.Fatalf("error = %v, want the known extension named", err)
+	}
+}
+
+// A sync with one command would record half the conversation, so the extension's
+// own validation stops the process.
+func TestServeStopsWithAnIncompleteExtension(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, "/bin/true")+
+		"extensions:\n  session-history-sync:\n    user_message_command: /momo-user\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	err = serve(context.Background(), discard(), cfg, l)
+	if err == nil {
+		t.Fatal("serve succeeded, want the extension's validation error")
+	}
+	if !strings.Contains(err.Error(), "assistant_message_command") {
+		t.Fatalf("error = %v, want the missing command named", err)
+	}
+}
+
 // TestServeStopsWithoutAnAgent pins the required block: momo answers a message
 // with an agent, so a configuration with no agent never serves.
 func TestServeStopsWithoutAnAgent(t *testing.T) {

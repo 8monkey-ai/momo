@@ -185,7 +185,7 @@ func TestNewRoutes(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), yaml, capture{})
+	c, err := New(context.Background(), yaml, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNewRequiresItsCredentials(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})

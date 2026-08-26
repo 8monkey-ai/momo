@@ -25,6 +25,9 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	Channels          map[string]channel.Config
 	Agent             func(any) error
+	// Extensions holds one undecoded block for each extension an operator
+	// configured, so an extension owns its own settings the way a channel does.
+	Extensions map[string]func(any) error
 }
 
 type file struct {
@@ -36,6 +39,7 @@ type file struct {
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
 	Agent             yaml.Node            `yaml:"agent"`
+	Extensions        map[string]yaml.Node `yaml:"extensions"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -73,6 +77,7 @@ func parse(raw []byte) (*Config, error) {
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
 		Channels:        map[string]channel.Config{},
 		Agent:           decoderFor(f.Agent),
+		Extensions:      map[string]func(any) error{},
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":8080"
@@ -87,6 +92,9 @@ func parse(raw []byte) (*Config, error) {
 	for name, node := range f.Channels {
 		settings, delivery := splitDelivery(node)
 		cfg.Channels[name] = channel.Config{Settings: decoderFor(settings), Delivery: decoderFor(delivery)}
+	}
+	for name, node := range f.Extensions {
+		cfg.Extensions[name] = decoderFor(node)
 	}
 	return cfg, nil
 }

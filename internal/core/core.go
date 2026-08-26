@@ -71,6 +71,15 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
+// History writes a message somebody else produced into a conversation's agent
+// session, so the session keeps the order the contact saw. A channel asks for it
+// when a human answers a conversation in its place. Recording answers nothing:
+// a failure is the operator's to read, never the contact's.
+type History interface {
+	RecordUser(ctx context.Context, m Message)
+	RecordAssistant(ctx context.Context, m Message)
+}
+
 // Emit delivers one part of a turn's reply. The agent calls it as the content
 // arrives. It does not block and returns the error of an earlier part, so an
 // agent talking to a broken channel stops generating.

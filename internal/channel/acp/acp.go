@@ -33,7 +33,7 @@ func (a acp) Routes() []channel.Route { return a.routes }
 
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
 // with every request authenticated by a bearer token.
-func New(lifetime context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+func New(lifetime context.Context, decode channel.Decoder, h core.Handler, _ core.History) (channel.Channel, error) {
 	s := settings{Path: "/v1/acp", ConnectionGrace: 5 * time.Minute}
 	if err := decode(&s); err != nil {
 		return nil, err

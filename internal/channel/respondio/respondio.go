@@ -34,6 +34,13 @@ const (
 	eventSent     = "message.sent"
 
 	textMessage = "text"
+
+	// sourceUser and sourceWorkflow are the outgoing senders momo did not produce:
+	// what they wrote belongs in the agent's session as an assistant message.
+	// respond.io's schema does not list every source it may send, so every other
+	// source follows the ordinary outgoing flow.
+	sourceUser     = "user"
+	sourceWorkflow = "workflow"
 )
 
 type settings struct {
@@ -43,6 +50,9 @@ type settings struct {
 	SentPath       string `yaml:"sent_path"`
 	APIToken       string `yaml:"api_token"`
 	APIURL         string `yaml:"api_url"`
+	// MomoUserID is the respond.io user momo is. Zero means momo owns every
+	// conversation, whoever it is assigned to.
+	MomoUserID int64 `yaml:"momo_user_id"`
 }
 
 type respondio struct {
@@ -54,7 +64,7 @@ func (r respondio) Routes() []channel.Route { return r.routes }
 // New configures the respond.io channel: one route per registered webhook, each
 // verified with that webhook's own signing key. respond.io holds nothing that
 // needs releasing at shutdown, so it ignores its lifetime.
-func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+func New(_ context.Context, decode channel.Decoder, h core.Handler, history core.History) (channel.Channel, error) {
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",
@@ -70,25 +80,38 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	if s.APIToken == "" {
 		return nil, errors.New("api_token is required")
 	}
+	// Without the session history sync, a conversation a human owns would be
+	// answered by momo as well, which is what the assignee id is set to prevent.
+	if s.MomoUserID != 0 && history == nil {
+		return nil, errors.New("momo_user_id requires the session-history-sync extension")
+	}
 	c := &client{url: s.APIURL, token: s.APIToken, http: &http.Client{Timeout: 30 * time.Second}}
 	return respondio{routes: []channel.Route{
-		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c}},
-		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c}},
+		{Path: s.ReceivedPath, Handler: &webhook{
+			secret: s.ReceivedSecret, core: h, client: c, history: history, momoUserID: s.MomoUserID}},
+		{Path: s.SentPath, Handler: &webhook{
+			secret: s.SentSecret, core: h, client: c, history: history, momoUserID: s.MomoUserID}},
 	}}, nil
 }
 
 type webhook struct {
-	secret string
-	core   core.Handler
-	client *client
+	secret     string
+	core       core.Handler
+	client     *client
+	history    core.History
+	momoUserID int64
 }
 
 type event struct {
 	EventType string `json:"event_type"`
 	Contact   struct {
-		ID int64 `json:"id"`
+		ID       int64 `json:"id"`
+		Assignee struct {
+			ID int64 `json:"id"`
+		} `json:"assignee"`
 	} `json:"contact"`
 	Message struct {
+		Source  string `json:"source"`
 		Message struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -135,14 +158,32 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 	}
 	switch ev.EventType {
 	case eventReceived:
+		// The text reaches the session so the agent knows what was said, and the human
+		// who owns the conversation answers alone.
+		if h.humanOwns(ev.Contact.Assignee.ID) {
+			h.history.RecordUser(ctx, m)
+			return
+		}
 		if err := h.core.Received(ctx, m, h.client.reply(contactID)); err != nil {
 			h.report(ctx, contactID, err)
 		}
 	case eventSent:
-		// An outgoing message is momo's own reply as often as an operator's; nothing
-		// answers it.
+		// What a person or a workflow sent is an answer the agent never produced, so the
+		// session would lose it. momo's own reply is already in the session, written by
+		// the turn that produced it.
+		if h.history != nil && (ev.Message.Source == sourceUser || ev.Message.Source == sourceWorkflow) {
+			h.history.RecordAssistant(ctx, m)
+			return
+		}
 		h.core.Sent(ctx, m)
 	}
+}
+
+// An unassigned conversation is momo's, and so is every conversation when the
+// operator configured no assignee id for momo. A configured id comes with the
+// history, so a conversation a human owns is always recordable.
+func (h *webhook) humanOwns(assigneeID int64) bool {
+	return h.momoUserID != 0 && assigneeID != 0 && assigneeID != h.momoUserID
 }
 
 // report tells the operators of the conversation that the message got no reply.

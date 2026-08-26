@@ -18,6 +18,7 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/sessionhistory"
 
 	_ "github.com/8monkey-ai/momo/internal/channel/acp"
 	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
@@ -103,6 +104,24 @@ func handle(mux *http.ServeMux, route channel.Route) (err error) {
 	return nil
 }
 
+// buildHistory builds the session history sync when an operator configured it.
+// The set of extensions is closed and small, so the process names the one it can
+// build instead of holding a registry.
+func buildHistory(log *slog.Logger, extensions map[string]func(any) error, a core.Agent) (core.History, error) {
+	var history core.History
+	for name, decode := range extensions {
+		if name != sessionhistory.Name {
+			return nil, fmt.Errorf("unknown extension %q, known extensions: [%s]", name, sessionhistory.Name)
+		}
+		s, err := sessionhistory.New(log, decode, a)
+		if err != nil {
+			return nil, fmt.Errorf("extension %q: %w", name, err)
+		}
+		history = s
+	}
+	return history, nil
+}
+
 func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.Listener) error {
 	lifetime, release := context.WithCancel(context.Background())
 	defer release()
@@ -111,7 +130,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a))
+	history, err := buildHistory(log, cfg.Extensions, a)
+	if err != nil {
+		return err
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history)
 	if err != nil {
 		return err
 	}

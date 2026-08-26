@@ -41,8 +41,10 @@ type Config struct {
 // channel's lifetime: momo cancels it when it begins shutting down, and a
 // channel releases whatever it holds — open streams, goroutines, clients — when
 // that happens. The process decides when that is; a channel never watches for
-// it itself.
-type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
+// it itself. The history is the configured session history sync, or nil when no
+// operator configured one, so a channel that needs it refuses its own
+// configuration at start-up.
+type Factory func(lifetime context.Context, decode Decoder, h core.Handler, history core.History) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -54,17 +56,43 @@ type qualifying struct {
 	h    core.Handler
 }
 
-func (q qualifying) qualify(m core.Message) core.Message {
-	m.Conversation = q.name + ":" + m.Conversation
+// qualify names the channel a message arrived on, which turns a channel's own
+// contact id into the conversation identity the rest of momo acts on.
+func qualify(name string, m core.Message) core.Message {
+	m.Conversation = name + ":" + m.Conversation
 	return m
 }
 
 func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Reply) error {
-	return q.h.Received(ctx, q.qualify(m), reply)
+	return q.h.Received(ctx, qualify(q.name, m), reply)
 }
 
 func (q qualifying) Sent(ctx context.Context, m core.Message) {
-	q.h.Sent(ctx, q.qualify(m))
+	q.h.Sent(ctx, qualify(q.name, m))
+}
+
+// qualifyingHistory qualifies a recorded message the same way, so a record and a
+// turn of one conversation reach the agent as one conversation, in one order.
+type qualifyingHistory struct {
+	name    string
+	history core.History
+}
+
+func (q qualifyingHistory) RecordUser(ctx context.Context, m core.Message) {
+	q.history.RecordUser(ctx, qualify(q.name, m))
+}
+
+func (q qualifyingHistory) RecordAssistant(ctx context.Context, m core.Message) {
+	q.history.RecordAssistant(ctx, qualify(q.name, m))
+}
+
+// qualified keeps an absent history absent, so a channel that needs one still
+// refuses its own configuration.
+func qualified(name string, history core.History) core.History {
+	if history == nil {
+		return nil
+	}
+	return qualifyingHistory{name: name, history: history}
 }
 
 // Register makes a channel available under the name operators use to configure
@@ -83,7 +111,7 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Config, h core.Handler) ([]Instance, error) {
+func Build(lifetime context.Context, configs map[string]Config, h core.Handler, history core.History) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -94,7 +122,7 @@ func Build(lifetime context.Context, configs map[string]Config, h core.Handler) 
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}))
+		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}), qualified(name, history))
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
