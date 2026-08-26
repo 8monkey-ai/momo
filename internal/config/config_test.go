@@ -160,3 +160,31 @@ func TestADeliveryMomoCannotPaceIsRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestTheSessionHistorySyncBlockIsDecoded(t *testing.T) {
+	cfg := load(t, "session_history_sync:\n  user_message_command: \"/add-user-message\"\n"+
+		"  assistant_message_command: \"/add-assistant-message\"\n")
+	var s struct {
+		UserMessageCommand      string `yaml:"user_message_command"`
+		AssistantMessageCommand string `yaml:"assistant_message_command"`
+	}
+	if err := cfg.SessionHistorySync(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.UserMessageCommand != "/add-user-message" || s.AssistantMessageCommand != "/add-assistant-message" {
+		t.Fatalf("session_history_sync = %+v, want the two configured commands", s)
+	}
+}
+
+func TestNoSessionHistorySyncBlockLeavesTheCommandsUnset(t *testing.T) {
+	cfg := load(t, "channels:\n  respondio:\n    api_token: a\n")
+	var s struct {
+		UserMessageCommand string `yaml:"user_message_command"`
+	}
+	if err := cfg.SessionHistorySync(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.UserMessageCommand != "" {
+		t.Fatalf("user_message_command = %q, want it unset", s.UserMessageCommand)
+	}
+}

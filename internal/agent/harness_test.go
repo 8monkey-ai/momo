@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -163,6 +164,7 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 	defer func() { _ = l.Close() }()
 	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
 	h, _ := harness(t)
+	prompts := prompts(l)
 
 	failed := make(chan error, 2)
 	for _, conversation := range []string{"respondio:1", "respondio:2"} {
@@ -172,28 +174,89 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 		}()
 	}
 
-	held := make([]net.Conn, 0, 2)
-	for range 2 {
-		conn, err := l.Accept()
-		if err != nil {
-			t.Fatalf("accept: %v", err)
-		}
-		if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
-			t.Fatalf("reading the prompt's mark: %v", err)
-		}
-		held = append(held, conn)
-	}
+	held := []net.Conn{prompted(t, prompts), prompted(t, prompts)}
 	for _, conn := range held {
-		if _, err := conn.Write([]byte{'.'}); err != nil {
-			t.Fatalf("releasing a prompt: %v", err)
-		}
-		_ = conn.Close()
+		release(t, conn)
 	}
 	for range 2 {
 		if err := <-failed; err != nil {
 			t.Fatalf("Turn: %v", err)
 		}
 	}
+}
+
+// TestTurnsOfOneConversationDoNotOverlap pins the order a conversation keeps. A
+// record of a handed-over message takes the same path as a turn, so this holds a
+// record and a turn of one conversation apart as well.
+func TestTurnsOfOneConversationDoNotOverlap(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	h, _ := harness(t)
+	prompts := prompts(l)
+
+	failed := make(chan error, 2)
+	for range 2 {
+		go func() {
+			m := core.Message{Conversation: "respondio:1", Content: core.Text("hi")}
+			failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
+		}()
+	}
+
+	first := prompted(t, prompts)
+	select {
+	case <-prompts:
+		t.Fatal("a second prompt reached the agent while the first turn was running")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release(t, first)
+	release(t, prompted(t, prompts))
+	for range 2 {
+		if err := <-failed; err != nil {
+			t.Fatalf("Turn: %v", err)
+		}
+	}
+}
+
+// prompts carries one connection for each prompt that reached the stub agent. The
+// stub holds the prompt until release answers it.
+func prompts(l net.Listener) <-chan net.Conn {
+	conns := make(chan net.Conn, 2)
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+				return
+			}
+			conns <- conn
+		}
+	}()
+	return conns
+}
+
+func prompted(t *testing.T, prompts <-chan net.Conn) net.Conn {
+	t.Helper()
+	select {
+	case conn := <-prompts:
+		return conn
+	case <-time.After(30 * time.Second):
+		t.Fatal("no prompt reached the agent")
+		return nil
+	}
+}
+
+func release(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
 }
 
 // TestTheSessionWorksInAnAbsoluteDirectory pins what ACP v1 requires of cwd: an
