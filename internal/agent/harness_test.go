@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -174,20 +175,10 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 
 	held := make([]net.Conn, 0, 2)
 	for range 2 {
-		conn, err := l.Accept()
-		if err != nil {
-			t.Fatalf("accept: %v", err)
-		}
-		if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
-			t.Fatalf("reading the prompt's mark: %v", err)
-		}
-		held = append(held, conn)
+		held = append(held, mark(t, l))
 	}
 	for _, conn := range held {
-		if _, err := conn.Write([]byte{'.'}); err != nil {
-			t.Fatalf("releasing a prompt: %v", err)
-		}
-		_ = conn.Close()
+		release(t, conn)
 	}
 	for range 2 {
 		if err := <-failed; err != nil {
@@ -306,6 +297,133 @@ func TestATurnAnswersThePermissionRequestAndStillReplies(t *testing.T) {
 				t.Fatalf("trace =\n%s\nwant a line %q", raw, offered.want)
 			}
 		})
+	}
+}
+
+func TestPromptRunsTheSharedLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace")
+	t.Setenv("STUBAGENT_TRACE", path)
+	h, root := harness(t)
+	var calls [][]core.ContentBlock
+	emit := func(content []core.ContentBlock) error {
+		calls = append(calls, content)
+		return nil
+	}
+	if err := h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), emit); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(calls) != 2 || calls[0][0].Text != "hello from\n\n" {
+		t.Fatalf("emitted %+v, want the reply of the stub agent", calls)
+	}
+	dir := filepath.Join(root, dirName("respondio:1"))
+	if _, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("the conversation directory is missing: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the stub agent wrote no trace: %v", err)
+	}
+	wantTrace(t, strings.Split(strings.TrimRight(string(raw), "\n"), "\n"), []string{
+		"session/list\t" + dir,
+		"session/new\t" + dir + "\tstub-session-0",
+	})
+}
+
+func TestATurnAndAPromptShareTheConversationSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace")
+	t.Setenv("STUBAGENT_TRACE", path)
+	h, root := harness(t)
+	turn(t, h, "respondio:1")
+	if err := h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), func([]core.ContentBlock) error { return nil }); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the stub agent wrote no trace: %v", err)
+	}
+	dir := filepath.Join(root, dirName("respondio:1"))
+	wantTrace(t, strings.Split(strings.TrimRight(string(raw), "\n"), "\n"), []string{
+		"session/list\t" + dir,
+		"session/new\t" + dir + "\tstub-session-0",
+		"session/list\t" + dir,
+		"session/resume\tstub-session-0",
+	})
+}
+
+func TestTwoPromptsOfOneConversationWaitForEachOther(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	h, _ := harness(t)
+
+	drop := func([]core.ContentBlock) error { return nil }
+	failed := make(chan error, 2)
+	go func() { failed <- h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), drop) }()
+	held := mark(t, l)
+	go func() {
+		m := core.Message{Conversation: "respondio:1", Content: core.Text("hi")}
+		failed <- h.Turn(context.Background(), m, drop)
+	}()
+
+	if err := l.(*net.TCPListener).SetDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := l.Accept(); err == nil {
+		_ = second.Close()
+		t.Fatal("a second prompt of the conversation reached the agent while the first was running")
+	}
+	if err := l.(*net.TCPListener).SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	release(t, held)
+	release(t, mark(t, l))
+	for range 2 {
+		if err := <-failed; err != nil {
+			t.Fatalf("prompt: %v", err)
+		}
+	}
+}
+
+// mark waits for the byte the stub agent writes when it reaches its prompt, and
+// answers the connection that releases it.
+func mark(t *testing.T, l net.Listener) net.Conn {
+	t.Helper()
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	return conn
+}
+
+func release(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestPromptStopsAtTheTurnTimeout holds the stub agent at its prompt and never
+// releases it, so only turn_timeout can end the prompt.
+func TestPromptStopsAtTheTurnTimeout(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	h, err := New(discard(), decoder(fmt.Sprintf("command: [%q]\ndata_dir: %q\nturn_timeout: 200ms\n", stub, t.TempDir())))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := h.Prompt(context.Background(), "respondio:1", core.Text("/store-user hi"), func([]core.ContentBlock) error { return nil }); err == nil {
+		t.Fatal("Prompt succeeded, want the timeout's error")
 	}
 }
 

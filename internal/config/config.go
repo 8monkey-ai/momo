@@ -25,6 +25,15 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	Channels          map[string]channel.Config
 	Agent             func(any) error
+	Extensions        Extensions
+}
+
+// Extensions is what momo does beyond answering a message with a turn. An
+// extension is off until an operator names its block, and each one owns its
+// settings, which momo hands over undecoded.
+type Extensions struct {
+	SessionHistorySync        func(any) error
+	SessionHistorySyncEnabled bool
 }
 
 type file struct {
@@ -36,6 +45,11 @@ type file struct {
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
 	Agent             yaml.Node            `yaml:"agent"`
+	Extensions        extensions           `yaml:"extensions"`
+}
+
+type extensions struct {
+	SessionHistorySync yaml.Node `yaml:"session_history_sync"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -73,6 +87,12 @@ func parse(raw []byte) (*Config, error) {
 		ShutdownTimeout: duration(f.ShutdownTimeout, 20*time.Second),
 		Channels:        map[string]channel.Config{},
 		Agent:           decoderFor(f.Agent),
+		Extensions: Extensions{
+			SessionHistorySync: decoderFor(f.Extensions.SessionHistorySync),
+			// Naming the block asks for the extension, so a block with no commands in it is
+			// the extension's error to report, not a silent disabling.
+			SessionHistorySyncEnabled: !f.Extensions.SessionHistorySync.IsZero(),
+		},
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":8080"

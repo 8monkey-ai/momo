@@ -5,14 +5,17 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistorysync"
 )
 
 const secret = "signing-key"
@@ -53,9 +56,28 @@ func post(t *testing.T, h http.Handler, body, signature string) *httptest.Respon
 	return w
 }
 
-func payload(eventType string) string {
-	return `{"event_type":"` + eventType + `","contact":{"id":12345},` +
-		`"message":{"message":{"type":"text","text":"hello"}}}`
+func payload(eventType string) string { return delivered(eventType, "", "") }
+
+// delivered is the webhook body respond.io delivers. assignee and sender are
+// written as the members they are, so a test states an omitted one as "".
+func delivered(eventType, assignee, sender string) string {
+	return `{"event_type":"` + eventType + `","contact":{"id":12345` + assignee + `},` +
+		`"message":{"message":{"type":"text","text":"hello"}}` + sender + `}`
+}
+
+func assignedTo(id int64) string { return `,"assignee":{"id":` + strconv.FormatInt(id, 10) + `}` }
+
+func sentBy(source string) string { return `,"sender":{"source":"` + source + `"}` }
+
+// recording reports into the same calls channel as the handler, so a test states
+// which one of the two the event reached.
+type recording struct {
+	calls chan call
+}
+
+func (r recording) Record(_ context.Context, m core.Message, role sessionhistorysync.Role) error {
+	r.calls <- call{direction: "record " + string(role), message: m}
+	return nil
 }
 
 func TestSignature(t *testing.T) {
@@ -185,7 +207,7 @@ func TestNewRoutes(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), yaml, capture{})
+	c, err := New(context.Background(), yaml, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -210,9 +232,147 @@ func TestNewRequiresItsCredentials(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})
+	}
+}
+
+// TestHandover pins who acts on an event: the agent through the handler, the agent
+// session through the recorder, or nothing beyond the log.
+func TestHandover(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		assigneeID int64
+		recording  bool
+		body       string
+		want       string
+	}{
+		{name: "incoming while another assignee owns the contact", assigneeID: 7, recording: true,
+			body: delivered(eventReceived, assignedTo(99), ""), want: "record user"},
+		{name: "incoming assigned to momo", assigneeID: 7, recording: true,
+			body: delivered(eventReceived, assignedTo(7), ""), want: "received"},
+		{name: "incoming with an omitted assignee", assigneeID: 7, recording: true,
+			body: delivered(eventReceived, "", ""), want: "received"},
+		{name: "incoming with a null assignee", assigneeID: 7, recording: true,
+			body: delivered(eventReceived, `,"assignee":null`, ""), want: "received"},
+		{name: "outgoing from a user", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(99), sentBy("user")), want: "record assistant"},
+		{name: "outgoing from a user while momo owns the contact", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(7), sentBy("user")), want: "record assistant"},
+		{name: "outgoing from a workflow", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(99), sentBy("workflow")), want: "record assistant"},
+		{name: "outgoing from a workflow while momo owns the contact", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(7), sentBy("workflow")), want: "record assistant"},
+		{name: "outgoing from the api", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(99), sentBy("api")), want: "sent"},
+		{name: "outgoing with no sender", assigneeID: 7, recording: true,
+			body: delivered(eventSent, assignedTo(99), ""), want: "sent"},
+		{name: "outgoing from a sender momo does not know", assigneeID: 7, recording: true,
+			body: delivered(eventSent, "", sentBy("integration")), want: "sent"},
+
+		{name: "incoming with another assignee and no assignee_id", recording: true,
+			body: delivered(eventReceived, assignedTo(99), ""), want: "received"},
+		{name: "incoming with no assignee and no assignee_id", recording: true,
+			body: delivered(eventReceived, "", ""), want: "received"},
+		{name: "outgoing from a user with no assignee_id", recording: true,
+			body: delivered(eventSent, "", sentBy("user")), want: "record assistant"},
+		{name: "outgoing from a workflow with no assignee_id", recording: true,
+			body: delivered(eventSent, "", sentBy("workflow")), want: "record assistant"},
+		{name: "outgoing from the api with no assignee_id", recording: true,
+			body: delivered(eventSent, "", sentBy("api")), want: "sent"},
+
+		{name: "incoming with another assignee and the extension off",
+			body: delivered(eventReceived, assignedTo(99), ""), want: "received"},
+		{name: "outgoing from a user with the extension off",
+			body: delivered(eventSent, "", sentBy("user")), want: "sent"},
+		{name: "outgoing from a workflow with the extension off",
+			body: delivered(eventSent, "", sentBy("workflow")), want: "sent"},
+		{name: "outgoing from the api with the extension off",
+			body: delivered(eventSent, "", sentBy("api")), want: "sent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := make(chan call, 2)
+			h := &webhook{secret: secret, core: capture{calls: calls}, client: &client{}, assigneeID: tc.assigneeID}
+			if tc.recording {
+				h.recorder = recording{calls: calls}
+			}
+			if got := post(t, h, tc.body, sign(tc.body, secret)).Code; got != http.StatusOK {
+				t.Fatalf("status = %d, want %d", got, http.StatusOK)
+			}
+			select {
+			case got := <-calls:
+				want := call{direction: tc.want, message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("the event reached %+v, want %+v", got, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("nothing was called, want %s", tc.want)
+			}
+			select {
+			case extra := <-calls:
+				t.Fatalf("the event reached %+v as well, want only %s", extra, tc.want)
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
+}
+
+type answering struct{}
+
+func (answering) Received(ctx context.Context, _ core.Message, reply core.Reply) error {
+	return reply(ctx, core.Text("the answer"))
+}
+
+func (answering) Sent(context.Context, core.Message) {}
+
+func TestAnIncomingMessageMomoOwnsIsAnswered(t *testing.T) {
+	sent := make(chan string, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the API call: %v", err)
+			return
+		}
+		sent <- r.URL.Path + " " + string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+
+	body := delivered(eventReceived, assignedTo(7), "")
+	h := &webhook{
+		secret: secret, core: answering{}, assigneeID: 7,
+		recorder: recording{calls: make(chan call, 1)},
+		client:   &client{url: api.URL, token: "token", http: api.Client()},
+	}
+	if got := post(t, h, body, sign(body, secret)).Code; got != http.StatusOK {
+		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+	}
+	want := `/contact/id:12345/message {"message":{"text":"the answer","type":"text"}}`
+	select {
+	case got := <-sent:
+		if got != want {
+			t.Fatalf("respond.io received %s, want %s", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("no reply reached respond.io, want %s", want)
+	}
+}
+
+func TestNewRefusesAnAssigneeWithoutTheExtension(t *testing.T) {
+	decode := func(v any) error {
+		s := v.(*settings)
+		s.ReceivedSecret = "a"
+		s.SentSecret = "b"
+		s.APIToken = "token"
+		s.AssigneeID = 7
+		return nil
+	}
+	if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
+		t.Fatal("New succeeded, want an error about the handover momo cannot record")
+	}
+	if _, err := New(context.Background(), decode, capture{}, recording{}); err != nil {
+		t.Fatalf("New with the extension enabled: %v", err)
 	}
 }

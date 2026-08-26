@@ -19,6 +19,7 @@ import (
 
 	wire "github.com/8monkey-ai/momo/internal/acp"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistorysync"
 )
 
 // echoAgent answers with the content the message carried, so a test drives the
@@ -583,7 +584,7 @@ func TestNewRejectsUnusableSettings(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error naming the unusable setting")
 			}
 		})
@@ -599,12 +600,45 @@ func TestNewServesTheConfiguredPath(t *testing.T) {
 		s.Token = token
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{})
+	c, err := New(context.Background(), decode, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	routes := c.Routes()
 	if len(routes) != 1 || routes[0].Path != "/v1/acp" {
 		t.Fatalf("routes = %+v, want the single default path /v1/acp", routes)
+	}
+}
+
+// refusing fails the test if the ACP channel records anything: a client's session
+// holds the whole conversation, so nothing on this channel is missing from it.
+type refusing struct{ t *testing.T }
+
+func (r refusing) Record(_ context.Context, m core.Message, role sessionhistorysync.Role) error {
+	r.t.Errorf("the ACP channel recorded %+v as %q, want no record", m, role)
+	return nil
+}
+
+func TestTheChannelAnswersAPromptAndRecordsNothing(t *testing.T) {
+	decode := func(v any) error {
+		v.(*settings).Token = token
+		return nil
+	}
+	// The lifetime is released before the server closes, the way the process shuts
+	// a channel down: an open stream is the channel's to close.
+	lifetime, release := context.WithCancel(context.Background())
+	c, err := New(lifetime, decode, echoHandler(), refusing{t: t})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(c.Routes()[0].Handler)
+	defer srv.Close()
+	defer release()
+	h := &harness{url: srv.URL}
+
+	connID, sessionID, _, sessionStream := h.session(t)
+	h.prompt(t, connID, sessionID, `{"type":"text","text":"hello"}`)
+	if got := h.nextReply(t, sessionStream, sessionID).Text; got != "hello" {
+		t.Fatalf("the reply carried %q, want \"hello\"", got)
 	}
 }

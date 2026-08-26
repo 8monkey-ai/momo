@@ -160,3 +160,53 @@ func TestADeliveryMomoCannotPaceIsRefused(t *testing.T) {
 		})
 	}
 }
+
+const extensionCommands = "extensions:\n  session_history_sync:\n" +
+	"    record_user_message_command: \"/add-user-message\"\n" +
+	"    record_assistant_message_command: \"/add-assistant-message\"\n"
+
+func TestAnAbsentExtensionsBlockDisablesTheExtension(t *testing.T) {
+	cfg := load(t, "channels:\n  respondio:\n    api_token: a\n")
+	if cfg.Extensions.SessionHistorySyncEnabled {
+		t.Fatal("session history sync is enabled, want it disabled with no extensions block")
+	}
+}
+
+func TestTheExtensionBlockIsEnabledAndDecodedIntoItsOwnSettings(t *testing.T) {
+	cfg := load(t, extensionCommands)
+	if !cfg.Extensions.SessionHistorySyncEnabled {
+		t.Fatal("session history sync is disabled, want the configured block to enable it")
+	}
+	var s struct {
+		User      string `yaml:"record_user_message_command"`
+		Assistant string `yaml:"record_assistant_message_command"`
+	}
+	if err := cfg.Extensions.SessionHistorySync(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.User != "/add-user-message" || s.Assistant != "/add-assistant-message" {
+		t.Fatalf("commands = %+v, want the two configured commands", s)
+	}
+}
+
+func TestAnEmptyExtensionBlockIsStillEnabled(t *testing.T) {
+	if cfg := load(t, "extensions:\n  session_history_sync:\n"); !cfg.Extensions.SessionHistorySyncEnabled {
+		t.Fatal("session history sync is disabled, want a named block to enable it")
+	}
+}
+
+func TestRejectsAnUnknownExtension(t *testing.T) {
+	if _, err := parse([]byte("extensions:\n  team_inbox_sync:\n    command: \"/a\"\n")); err == nil {
+		t.Fatal("parse succeeded, want an error naming the unknown extension")
+	}
+}
+
+func TestMisspelledExtensionSettingIsReported(t *testing.T) {
+	cfg := load(t, "extensions:\n  session_history_sync:\n    record_user_msg_command: \"/a\"\n")
+	var s struct {
+		User string `yaml:"record_user_message_command"`
+	}
+	if err := cfg.Extensions.SessionHistorySync(&s); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}

@@ -401,3 +401,27 @@ func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
 		t.Fatal("no response arrived on a stream older than read_timeout")
 	}
 }
+
+func TestTheRecorderIsBuiltOnlyForAnEnabledExtension(t *testing.T) {
+	absent := loadConfig(t, agentBlock(t, "/bin/true"))
+	got, err := recorder(discard(), absent, nil)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("recorder = %+v, want nil with no extensions block", got)
+	}
+
+	configured := loadConfig(t, agentBlock(t, "/bin/true")+
+		"extensions:\n  session_history_sync:\n    record_user_message_command: \"/add-user-message\"\n"+
+		"    record_assistant_message_command: \"/add-assistant-message\"\n")
+	if got, err = recorder(discard(), configured, nil); err != nil || got == nil {
+		t.Fatalf("recorder = %+v, %v, want a recorder and no error", got, err)
+	}
+
+	incomplete := loadConfig(t, agentBlock(t, "/bin/true")+
+		"extensions:\n  session_history_sync:\n    record_user_message_command: \"/add-user-message\"\n")
+	if _, err := recorder(discard(), incomplete, nil); err == nil {
+		t.Fatal("recorder succeeded, want an error naming the missing command")
+	}
+}
