@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -152,48 +153,110 @@ func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 	}
 }
 
-// TestTurnsOfDifferentConversationsRunAtTheSameTime releases no prompt before
-// both prompts have arrived, so an implementation that serialises the two turns
-// fails by deadlock and not by a measurement of time.
-func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
+// syncListener makes the stub agent hold every prompt until the test releases it.
+func syncListener(t *testing.T) net.Listener {
+	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = l.Close() }()
+	t.Cleanup(func() { _ = l.Close() })
 	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
-	h, _ := harness(t)
+	return l
+}
 
-	failed := make(chan error, 2)
-	for _, conversation := range []string{"respondio:1", "respondio:2"} {
+// prompted answers the prompt that arrives within wait, and nothing when none
+// does.
+func prompted(t *testing.T, l net.Listener, wait time.Duration) net.Conn {
+	t.Helper()
+	if err := l.(*net.TCPListener).SetDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := l.Accept()
+	if err != nil {
+		return nil
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	return conn
+}
+
+// release lets a held prompt finish its turn.
+func release(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func turns(h *Harness, conversations ...string) chan error {
+	failed := make(chan error, len(conversations))
+	for _, conversation := range conversations {
 		go func() {
 			m := core.Message{Conversation: conversation, Content: core.Text("hi")}
 			failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
 		}()
 	}
+	return failed
+}
 
-	held := make([]net.Conn, 0, 2)
-	for range 2 {
-		conn, err := l.Accept()
-		if err != nil {
-			t.Fatalf("accept: %v", err)
-		}
-		if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
-			t.Fatalf("reading the prompt's mark: %v", err)
-		}
-		held = append(held, conn)
-	}
-	for _, conn := range held {
-		if _, err := conn.Write([]byte{'.'}); err != nil {
-			t.Fatalf("releasing a prompt: %v", err)
-		}
-		_ = conn.Close()
-	}
-	for range 2 {
+func awaitTurns(t *testing.T, failed chan error, count int) {
+	t.Helper()
+	for range count {
 		if err := <-failed; err != nil {
 			t.Fatalf("Turn: %v", err)
 		}
 	}
+}
+
+// TestTurnsOfDifferentConversationsRunAtTheSameTime releases no prompt before
+// both prompts have arrived, so an implementation that serialises the two turns
+// fails by deadlock and not by a measurement of time.
+func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
+	l := syncListener(t)
+	h, _ := harness(t)
+	failed := turns(h, "respondio:1", "respondio:2")
+
+	held := make([]net.Conn, 0, 2)
+	for range 2 {
+		conn := prompted(t, l, time.Minute)
+		if conn == nil {
+			t.Fatal("only one of the two turns prompted")
+		}
+		held = append(held, conn)
+	}
+	for _, conn := range held {
+		release(t, conn)
+	}
+	awaitTurns(t, failed, 2)
+}
+
+// TestTurnsOfOneConversationDoNotRunAtTheSameTime pins the lock a session
+// depends on. A recorded message reaches the agent as a turn as well, so this
+// lock is what keeps a record and a reply out of each other's way.
+func TestTurnsOfOneConversationDoNotRunAtTheSameTime(t *testing.T) {
+	l := syncListener(t)
+	h, _ := harness(t)
+	failed := turns(h, "respondio:1", "respondio:1")
+
+	first := prompted(t, l, time.Minute)
+	if first == nil {
+		t.Fatal("no turn prompted")
+	}
+	if early := prompted(t, l, 200*time.Millisecond); early != nil {
+		_ = early.Close()
+		t.Fatal("the second turn of the conversation prompted while the first one was running")
+	}
+	release(t, first)
+
+	second := prompted(t, l, time.Minute)
+	if second == nil {
+		t.Fatal("the second turn never prompted")
+	}
+	release(t, second)
+	awaitTurns(t, failed, 2)
 }
 
 // TestTheSessionWorksInAnAbsoluteDirectory pins what ACP v1 requires of cwd: an

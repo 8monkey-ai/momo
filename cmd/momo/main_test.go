@@ -401,3 +401,46 @@ func TestAnOpenStreamOutlivesReadTimeout(t *testing.T) {
 		t.Fatal("no response arrived on a stream older than read_timeout")
 	}
 }
+
+func respondioBlock(extra string) string {
+	return "channels:\n  respondio:\n    received_secret: a\n    sent_secret: b\n    api_token: t\n" + extra
+}
+
+const historyBlock = "session_history:\n  user_command: /user-message\n  assistant_command: /assistant-message\n"
+
+func TestServeRefusesAHandoverItCannotRecord(t *testing.T) {
+	for name, body := range map[string]string{
+		"a momo user id without the extension": respondioBlock("    momo_user_id: 7\n"),
+		"the extension without both commands":  "session_history:\n  user_command: /user-message\n" + respondioBlock(""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, "/bin/true")+body)
+			l, err := listen(cfg)
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			defer func() { _ = l.Close() }()
+			if err := serve(context.Background(), discard(), cfg, l); err == nil {
+				t.Fatal("serve succeeded, want an error naming what is missing")
+			}
+		})
+	}
+}
+
+// TestAHandoverServesWithTheExtension pairs with the refusal above: the same user
+// id serves once the session_history block is there.
+func TestAHandoverServesWithTheExtension(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, "/bin/true")+
+		historyBlock+respondioBlock("    momo_user_id: 7\n"))
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- serve(ctx, discard(), cfg, l) }()
+	stop()
+	if err := <-stopped; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+}

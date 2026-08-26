@@ -104,6 +104,38 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 	}
 }
 
+func TestNoSessionHistoryBlockLeavesTheExtensionOut(t *testing.T) {
+	if cfg := load(t, "channels:\n  respondio:\n    api_token: a\n"); cfg.SessionHistory != nil {
+		t.Fatal("the configuration carries a session_history decoder, want none")
+	}
+}
+
+func TestTheSessionHistoryBlockDecodesIntoTheExtensionsOwnSettings(t *testing.T) {
+	cfg := load(t, "session_history:\n  user_command: /user-message\n  assistant_command: /assistant-message\n")
+	if cfg.SessionHistory == nil {
+		t.Fatal("the configuration carries no session_history decoder, want one")
+	}
+	var s struct {
+		UserCommand      string `yaml:"user_command"`
+		AssistantCommand string `yaml:"assistant_command"`
+	}
+	if err := cfg.SessionHistory(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.UserCommand != "/user-message" || s.AssistantCommand != "/assistant-message" {
+		t.Fatalf("commands = %+v, want /user-message and /assistant-message", s)
+	}
+}
+
+// TestAnEmptySessionHistoryBlockIsAConfiguredExtension pins that an operator who
+// names the block configures the extension: the missing commands are then the
+// extension's to report, and the block is not read as its absence.
+func TestAnEmptySessionHistoryBlockIsAConfiguredExtension(t *testing.T) {
+	if cfg := load(t, "session_history:\n"); cfg.SessionHistory == nil {
+		t.Fatal("the configuration carries no session_history decoder, want one")
+	}
+}
+
 func TestMissingFileIsReported(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load succeeded, want an error")
