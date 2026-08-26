@@ -25,6 +25,9 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	Channels          map[string]channel.Config
 	Agent             func(any) error
+	// SessionHistory is nil when the block is absent, which is how an optional
+	// extension is told from a configured one.
+	SessionHistory func(any) error
 }
 
 type file struct {
@@ -36,6 +39,7 @@ type file struct {
 	ShutdownTimeout   *time.Duration       `yaml:"shutdown_timeout"`
 	Channels          map[string]yaml.Node `yaml:"channels"`
 	Agent             yaml.Node            `yaml:"agent"`
+	SessionHistory    yaml.Node            `yaml:"session_history"`
 }
 
 // Load reads the configuration file at path and applies defaults.
@@ -83,6 +87,9 @@ func parse(raw []byte) (*Config, error) {
 	// A negative limit reaches the listener as a channel of negative capacity.
 	if cfg.MaxConnections < 0 {
 		return nil, errors.New("invalid configuration: max_connections cannot be negative")
+	}
+	if !f.SessionHistory.IsZero() {
+		cfg.SessionHistory = decoderFor(f.SessionHistory)
 	}
 	for name, node := range f.Channels {
 		settings, delivery := splitDelivery(node)

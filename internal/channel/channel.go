@@ -43,7 +43,10 @@ type Config struct {
 // channel releases whatever it holds — open streams, goroutines, clients — when
 // that happens. The process decides when that is; a channel never watches for
 // it itself.
-type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
+//
+// history records a message in the conversation's agent session instead of
+// answering it. It is nil when the extension that records is not configured.
+type Factory func(lifetime context.Context, decode Decoder, h core.Handler, history core.Handler) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -68,6 +71,15 @@ func (q qualifying) Sent(ctx context.Context, m core.Message) {
 	q.h.Sent(ctx, q.qualify(m))
 }
 
+// qualify leaves an absent extension absent for the channel as well, so a channel
+// can refuse a setting that needs it.
+func qualify(name string, h core.Handler) core.Handler {
+	if h == nil {
+		return nil
+	}
+	return qualifying{name: name, h: h}
+}
+
 // Register makes a channel available under the name operators use to configure
 // it. It is meant to be called from a package's init.
 func Register(name string, f Factory) {
@@ -86,8 +98,11 @@ type Instance struct {
 // Build builds every configured channel, in a stable order. Every channel is
 // wrapped so that one turn of a conversation runs at a time, delivery included,
 // so no channel and no assembly can forget it. The key is the channel's own
-// conversation id, because a conversation is one channel and one contact.
-func Build(lifetime context.Context, log *slog.Logger, configs map[string]Config, h core.Handler) ([]Instance, error) {
+// conversation id, because a conversation is one channel and one contact. The
+// history route shares that wrapping, so a record and a turn of the same
+// conversation never run at the same time. A record is not delivered to a
+// contact, so it takes no delivery.
+func Build(lifetime context.Context, log *slog.Logger, configs map[string]Config, h core.Handler, history core.Handler) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -98,7 +113,8 @@ func Build(lifetime context.Context, log *slog.Logger, configs map[string]Config
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		c, err := f(lifetime, configs[name].Settings, core.Serialize(log, delivery.Handler(qualifying{name: name, h: h})))
+		turns, records := core.Serialize(log, delivery.Handler(qualifying{name: name, h: h}), qualify(name, history))
+		c, err := f(lifetime, configs[name].Settings, turns, records)
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

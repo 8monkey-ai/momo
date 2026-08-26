@@ -78,6 +78,14 @@ idle_timeout: "2m"
 # How long a shutdown waits for in-flight requests before giving up. Default: "20s"
 shutdown_timeout: "20s"
 
+# Slash commands momo records a message with while a human answers a conversation.
+# Optional; both commands are required once the block is there.
+session_history:
+  # Command that records what the contact wrote.
+  user_command: "/user-message"
+  # Command that records what the workspace answered.
+  assistant_command: "/assistant-message"
+
 # Agent momo runs each turn on. Required.
 agent:
   # Command momo starts, as a list: the program and its arguments. The program
@@ -99,6 +107,11 @@ channels:
     api_token: "paste the respond.io API access token"
     # Base URL of the respond.io API. Default: "https://api.respond.io/v2"
     api_url: "https://api.respond.io/v2"
+    # respond.io user momo is in the workspace. momo answers the conversations
+    # assigned to it and the ones assigned to nobody, and records the messages of a
+    # conversation another assignee owns. 0 leaves every conversation to momo.
+    # A value other than 0 requires the session_history block. Default: 0
+    momo_user_id: 0
     # Paths momo serves the two webhooks on.
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
@@ -187,8 +200,59 @@ respond.io adds later need no upgrade on your side.
 
 momo answers an incoming message with one call to respond.io's send-a-message API,
 `POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
-messages (`message.sent`) are recorded only: they include momo's own replies, and
-answering them would make momo talk to itself.
+messages (`message.sent`) get no answer: they include momo's own replies, and answering
+them would make momo talk to itself.
+
+## Hand a conversation to a human
+
+An operator who takes over a conversation writes to the contact for a while, and momo must
+keep quiet. The agent's session would then lose everything said in that time, and the
+conversation the agent resumes afterwards would contradict the one the contact remembers.
+Turn on session history and momo records those messages in the session instead of answering
+them.
+
+Set up:
+
+1. Teach the agent two slash commands, one that adds a user message to the session and one
+   that adds an assistant message. The agent owns them; momo only sends them.
+2. Put both command names in the `session_history` block. Both are required.
+3. Create a respond.io user for momo, and put its user id in `momo_user_id`.
+4. Assign a conversation to momo to let momo answer it, and to an operator to take it over.
+
+Who answers an incoming message:
+
+| Assignee of the conversation | What momo does                               |
+| ---------------------------- | -------------------------------------------- |
+| momo                         | answers it with a turn                       |
+| nobody                       | answers it with a turn                       |
+| another user                 | records it as a user message and stays quiet |
+
+With `momo_user_id` left at 0 every conversation is momo's, whoever it is assigned to. momo
+reads the assignee from the webhook payload and asks the respond.io API for nothing.
+
+What is recorded as an assistant message: every outgoing message respond.io reports from a
+user or from a workflow, which is what an operator writes in the inbox and what an
+automation sends. momo's own replies arrive with neither sender source, so they are not
+recorded a second time.
+
+A record is one turn of that conversation, so it never runs at the same time as a reply, and
+the agent's session keeps the order of the conversation.
+
+Diagnosis is the log. A record momo could not write is logged as `message not recorded in
+the session history`, and what the agent answers a command with is logged as `the agent
+answered a session history command` — which is where an agent that does not serve the
+configured command says so. Neither reaches the contact, and neither becomes a comment on
+the conversation: a conversation a human answers is not momo's to write in.
+
+Known limits:
+
+- Text only. An attachment an operator or a contact sends is not recorded.
+- A record is one line: momo replaces the line breaks of the message with spaces, so the
+  command and its text stay on the one line the agent reads as a command.
+- momo does not check that the agent serves the two commands. A wrong command name shows up
+  in the log, not at startup.
+- The ACP channel records nothing: an ACP client owns its conversation and hands it to
+  nobody.
 
 ## Connect an ACP client
 

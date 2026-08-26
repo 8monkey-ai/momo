@@ -46,7 +46,9 @@ func (h *held) Received(ctx context.Context, m Message, reply Reply) error {
 	return nil
 }
 
-func (h *held) Sent(context.Context, Message) {}
+// Sent runs the same course as Received, so a test reads the calls of both routes
+// in one order.
+func (h *held) Sent(ctx context.Context, m Message) { _ = h.Received(ctx, m, nil) }
 
 // prompts answers the text of every call's content blocks, so a test states a
 // merged prompt as literals.
@@ -85,7 +87,7 @@ func arrive(ctx context.Context, h Handler, conversation, text string, reply Rep
 func TestASecondMessageStartsNoTurnWhileTheFirstRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -108,7 +110,7 @@ func TestASecondMessageStartsNoTurnWhileTheFirstRuns(t *testing.T) {
 func TestTwoMessagesDuringATurnBecomeOnePrompt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -134,7 +136,7 @@ func TestTwoMessagesDuringATurnBecomeOnePrompt(t *testing.T) {
 func TestAMessageArrivingDuringAMergedTurnGetsATurnOfItsOwn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -164,7 +166,7 @@ func TestAMessageArrivingDuringAMergedTurnGetsATurnOfItsOwn(t *testing.T) {
 func TestTurnsOfTwoConversationsRunAtTheSameTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		one := arrive(t.Context(), s, "stub:1", "one", nil)
 		two := arrive(t.Context(), s, "stub:2", "two", nil)
@@ -187,7 +189,7 @@ func TestEachCallerReturnsTheErrorOfTheTurnThatCarriedItsMessage(t *testing.T) {
 		own := errors.New("the first turn failed")
 		merged := errors.New("the merged turn failed")
 		h := newHeld(own, merged)
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -216,7 +218,7 @@ func TestEachCallerReturnsTheErrorOfTheTurnThatCarriedItsMessage(t *testing.T) {
 func TestAFailedTurnStillRunsTheBatchBehindIt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld(errors.New("the agent exited"))
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -240,7 +242,7 @@ func TestAFailedTurnStillRunsTheBatchBehindIt(t *testing.T) {
 func TestTheMergedReplyIsDeliveredOnTheRunningCallersReply(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 		running, waiting := &recorder{}, &recorder{}
 
 		first := arrive(t.Context(), s, "stub:1", "one", running.reply)
@@ -263,7 +265,7 @@ func TestTheMergedReplyIsDeliveredOnTheRunningCallersReply(t *testing.T) {
 func TestACancelledWaiterGivesUpAndItsMessageIsStillSent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 		ctx, cancel := context.WithCancel(t.Context())
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
@@ -287,7 +289,7 @@ func TestACancelledWaiterGivesUpAndItsMessageIsStillSent(t *testing.T) {
 func TestTheConversationIsForgottenWhenItGoesQuiet(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		first := arrive(t.Context(), s, "stub:1", "one", nil)
 		<-h.entered
@@ -311,7 +313,7 @@ func TestTheConversationIsForgottenWhenItGoesQuiet(t *testing.T) {
 func TestAMessageAfterTheConversationWentQuietStartsItsOwnTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newHeld()
-		s := Serialize(discard(), h)
+		s, _ := Serialize(discard(), h, nil)
 
 		for _, text := range []string{"one", "two"} {
 			failed := arrive(t.Context(), s, "stub:1", text, nil)
@@ -354,7 +356,7 @@ func TestAMergedTurnStartsAfterTheLastParagraphWasDelivered(t *testing.T) {
 			return emit(Text("answer\n\n"))
 		})
 		d := Delivery{Separator: "\n\n", WordsPerMinute: 60, MaxDelay: time.Minute}
-		s := Serialize(discard(), d.Handler(NewHandler(discard(), a)))
+		s, _ := Serialize(discard(), d.Handler(NewHandler(discard(), a)), nil)
 
 		first := arrive(t.Context(), s, "stub:1", "hi", reply)
 		// The first paragraph is paced for a second, and the second for one more.
@@ -368,6 +370,269 @@ func TestAMergedTurnStartsAfterTheLastParagraphWasDelivered(t *testing.T) {
 		wanted := []string{"turn hi", "sent first", "sent second", "turn more", "sent answer"}
 		if strings.Join(events, "|") != strings.Join(wanted, "|") {
 			t.Fatalf("events = %q, want %q", events, wanted)
+		}
+	})
+}
+
+func record(ctx context.Context, h Handler, conversation, text string) <-chan error {
+	return arrive(ctx, h, conversation, text, nil)
+}
+
+func TestNoRecordsRouteWithoutARecordingHandler(t *testing.T) {
+	if _, records := Serialize(discard(), newHeld(), nil); records != nil {
+		t.Fatalf("Serialize answered %+v as the records route, want none", records)
+	}
+}
+
+func TestARecordWaitsForTheTurnOfItsConversation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		turns, records := newHeld(), newHeld()
+		s, r := Serialize(discard(), turns, records)
+
+		turn := arrive(t.Context(), s, "stub:1", "one", nil)
+		<-turns.entered
+		recorded := record(t.Context(), r, "stub:1", "/user-message two")
+		synctest.Wait()
+		wantPrompts(t, records)
+
+		turns.release <- struct{}{}
+		<-records.entered
+		records.release <- struct{}{}
+		if err := <-turn; err != nil {
+			t.Fatalf("the turn returned %v", err)
+		}
+		if err := <-recorded; err != nil {
+			t.Fatalf("the record returned %v", err)
+		}
+		wantPrompts(t, records, "/user-message two")
+	})
+}
+
+func TestAnOutgoingRecordWaitsForTheTurnOfItsConversation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		turns, records := newHeld(), newHeld()
+		s, r := Serialize(discard(), turns, records)
+
+		turn := arrive(t.Context(), s, "stub:1", "one", nil)
+		<-turns.entered
+		recorded := make(chan struct{})
+		go func() {
+			defer close(recorded)
+			r.Sent(t.Context(), Message{Conversation: "stub:1", Content: Text("/assistant-message two")})
+		}()
+		synctest.Wait()
+		wantPrompts(t, records)
+
+		turns.release <- struct{}{}
+		<-records.entered
+		records.release <- struct{}{}
+		<-recorded
+		if err := <-turn; err != nil {
+			t.Fatalf("the turn returned %v", err)
+		}
+		wantPrompts(t, records, "/assistant-message two")
+	})
+}
+
+// A record carries no prompt of the contact, so the waiting message keeps a turn of
+// its own instead of being merged into the record.
+func TestATurnWaitsForTheRecordOfItsConversation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		turns, records := newHeld(), newHeld()
+		s, r := Serialize(discard(), turns, records)
+		answered := &recorder{}
+
+		recorded := record(t.Context(), r, "stub:1", "/user-message one")
+		<-records.entered
+		turn := arrive(t.Context(), s, "stub:1", "two", answered.reply)
+		synctest.Wait()
+		wantPrompts(t, turns)
+
+		records.release <- struct{}{}
+		<-turns.entered
+		turns.release <- struct{}{}
+		if err := <-recorded; err != nil {
+			t.Fatalf("the record returned %v", err)
+		}
+		if err := <-turn; err != nil {
+			t.Fatalf("the turn returned %v", err)
+		}
+		wantPrompts(t, turns, "two")
+		want(t, answered, "answer to two")
+	})
+}
+
+func TestTwoRecordsOfOneConversationRunOneAtATime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := newHeld()
+		_, r := Serialize(discard(), newHeld(), records)
+
+		first := record(t.Context(), r, "stub:1", "one")
+		<-records.entered
+		second := record(t.Context(), r, "stub:1", "two")
+		synctest.Wait()
+		wantPrompts(t, records, "one")
+
+		records.release <- struct{}{}
+		<-records.entered
+		records.release <- struct{}{}
+		if err := <-first; err != nil {
+			t.Fatalf("the first record returned %v", err)
+		}
+		if err := <-second; err != nil {
+			t.Fatalf("the second record returned %v", err)
+		}
+		wantPrompts(t, records, "one", "two")
+	})
+}
+
+// TestRecordsOfTwoConversationsRunAtTheSameTime releases nothing before both
+// records are inside the handler, so an implementation with one lock for every
+// conversation fails by deadlock and not by a measurement of time.
+func TestRecordsOfTwoConversationsRunAtTheSameTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := newHeld()
+		_, r := Serialize(discard(), newHeld(), records)
+
+		one := record(t.Context(), r, "stub:1", "one")
+		two := record(t.Context(), r, "stub:2", "two")
+		<-records.entered
+		<-records.entered
+
+		records.release <- struct{}{}
+		records.release <- struct{}{}
+		if err := <-one; err != nil {
+			t.Fatalf("the first record returned %v", err)
+		}
+		if err := <-two; err != nil {
+			t.Fatalf("the second record returned %v", err)
+		}
+	})
+}
+
+// releaseAll lets n held calls finish, the one inside the handler first: the test
+// has already read the entry of that call.
+func releaseAll(h *held, n int) {
+	for i := range n {
+		if i > 0 {
+			<-h.entered
+		}
+		h.release <- struct{}{}
+	}
+}
+
+// queued starts a call and waits until it is queued, so the order the calls
+// entered Serialize is the order of the arguments.
+func queued(ctx context.Context, h Handler, conversation, text string) <-chan error {
+	done := arrive(ctx, h, conversation, text, nil)
+	synctest.Wait()
+	return done
+}
+
+// wantOrder releases every held call and states the order the handler ran them in.
+// Every test that uses it queues several calls, because two callers that race for
+// the conversation land in the right order often enough to pass by luck.
+func wantOrder(t *testing.T, h *held, done []<-chan error, prompts ...string) {
+	t.Helper()
+	releaseAll(h, len(done))
+	for _, failed := range done {
+		if err := <-failed; err != nil {
+			t.Fatalf("a call returned %v", err)
+		}
+	}
+	wantPrompts(t, h, prompts...)
+}
+
+// The order the agent's session depends on: what waits behind a turn reaches the
+// agent as it was said.
+func TestQueuedRecordsRunInTheOrderTheyEntered(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHeld()
+		s, r := Serialize(discard(), h, h)
+
+		done := []<-chan error{arrive(t.Context(), s, "stub:1", "turn", nil)}
+		<-h.entered
+		for _, text := range []string{"one", "two", "three", "four", "five"} {
+			done = append(done, queued(t.Context(), r, "stub:1", text))
+		}
+
+		wantOrder(t, h, done, "turn", "one", "two", "three", "four", "five")
+	})
+}
+
+// A turn does not overtake a record that entered before it.
+func TestARecordAndATurnQueuedBehindARecordKeepTheirOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHeld()
+		s, r := Serialize(discard(), h, h)
+
+		done := []<-chan error{record(t.Context(), r, "stub:1", "held")}
+		<-h.entered
+		for _, text := range []string{"one", "three", "five"} {
+			done = append(done, queued(t.Context(), r, "stub:1", text))
+			done = append(done, queued(t.Context(), s, "stub:1", text+" answered"))
+		}
+
+		wantOrder(t, h, done, "held", "one", "one answered", "three", "three answered", "five", "five answered")
+	})
+}
+
+// A record does not overtake a turn that entered before it.
+func TestATurnAndARecordQueuedBehindARecordKeepTheirOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHeld()
+		s, r := Serialize(discard(), h, h)
+
+		done := []<-chan error{record(t.Context(), r, "stub:1", "held")}
+		<-h.entered
+		for _, text := range []string{"one", "three", "five"} {
+			done = append(done, queued(t.Context(), s, "stub:1", text+" answered"))
+			done = append(done, queued(t.Context(), r, "stub:1", text))
+		}
+
+		wantOrder(t, h, done, "held", "one answered", "one", "three answered", "three", "five answered", "five")
+	})
+}
+
+// A caller that gave up neither holds the conversation nor changes the order of
+// what is left.
+func TestACancelledQueuedCallerLeavesTheQueue(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHeld()
+		s, r := Serialize(discard(), h, h)
+		ctx, cancel := context.WithCancel(t.Context())
+
+		held := record(t.Context(), r, "stub:1", "held")
+		<-h.entered
+		gone := queued(ctx, r, "stub:1", "gone")
+		last := queued(t.Context(), s, "stub:1", "last")
+
+		cancel()
+		if err := <-gone; !errors.Is(err, context.Canceled) {
+			t.Fatalf("the queued caller returned %v, want %v", err, context.Canceled)
+		}
+
+		wantOrder(t, h, []<-chan error{held, last}, "held", "last")
+	})
+}
+
+func TestTheConversationIsForgottenAfterARecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := newHeld()
+		s, r := Serialize(discard(), newHeld(), records)
+
+		done := record(t.Context(), r, "stub:1", "one")
+		<-records.entered
+		records.release <- struct{}{}
+		if err := <-done; err != nil {
+			t.Fatalf("the record returned %v", err)
+		}
+
+		c := s.(*conversations)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if len(c.state) != 0 {
+			t.Fatalf("the map holds %d conversations, want none", len(c.state))
 		}
 	})
 }

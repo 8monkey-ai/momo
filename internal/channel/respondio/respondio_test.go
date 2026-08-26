@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,22 +19,24 @@ import (
 const secret = "signing-key"
 
 type call struct {
+	handler   string
 	direction string
 	message   core.Message
 	ctxErr    error
 }
 
 type capture struct {
+	name  string
 	calls chan call
 }
 
 func (c capture) Received(ctx context.Context, m core.Message, _ core.Reply) error {
-	c.calls <- call{direction: "received", message: m, ctxErr: ctx.Err()}
+	c.calls <- call{handler: c.name, direction: "received", message: m, ctxErr: ctx.Err()}
 	return nil
 }
 
 func (c capture) Sent(ctx context.Context, m core.Message) {
-	c.calls <- call{direction: "sent", message: m, ctxErr: ctx.Err()}
+	c.calls <- call{handler: c.name, direction: "sent", message: m, ctxErr: ctx.Err()}
 }
 
 func sign(body, key string) string {
@@ -185,7 +188,7 @@ func TestNewRoutes(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), yaml, capture{})
+	c, err := New(context.Background(), yaml, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -210,9 +213,189 @@ func TestNewRequiresItsCredentials(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})
+	}
+}
+
+// incoming is the payload of a received message whose contact is assigned to the
+// named respond.io user. respond.io sends a conversation nobody owns as a null.
+func incoming(assignee int64) string {
+	who := "null"
+	if assignee != 0 {
+		who = `{"id":` + strconv.FormatInt(assignee, 10) + `,"email":"operator@example.com"}`
+	}
+	return `{"event_type":"message.received","contact":{"id":12345,"assignee":` + who + `},` +
+		`"message":{"message":{"type":"text","text":"hello"}}}`
+}
+
+// outgoing is the payload of a sent message from the named sender source. An empty
+// source leaves the sender block out.
+func outgoing(source string) string {
+	sender := ""
+	if source != "" {
+		sender = `,"sender":{"source":"` + source + `","userId":2}`
+	}
+	return `{"event_type":"message.sent","contact":{"id":12345,"assignee":{"id":2}},` +
+		`"message":{"message":{"type":"text","text":"hello"}}` + sender + `}`
+}
+
+// routing answers the one handler call a payload leads to.
+func routing(t *testing.T, momoUserID int64, withHistory bool, body string) call {
+	t.Helper()
+	calls := make(chan call, 2)
+	w := &webhook{secret: secret, momoUserID: momoUserID, core: capture{name: "core", calls: calls}, client: &client{}}
+	if withHistory {
+		w.history = capture{name: "history", calls: calls}
+	}
+	if got := post(t, w, body, sign(body, secret)).Code; got != http.StatusOK {
+		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+	}
+	var got call
+	select {
+	case got = <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("no handler was called")
+	}
+	// One payload reaches one handler: a message both answered and recorded would
+	// reach the agent twice.
+	select {
+	case extra := <-calls:
+		t.Fatalf("a second handler was called: %+v", extra)
+	case <-time.After(10 * time.Millisecond):
+	}
+	return got
+}
+
+func TestWhoOwnsAnIncomingMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		momoUserID int64
+		body       string
+		want       string
+	}{
+		{name: "another assignee owns the conversation", momoUserID: 7, body: incoming(9), want: "history"},
+		{name: "momo is the assignee", momoUserID: 7, body: incoming(7), want: "core"},
+		{name: "nobody is the assignee", momoUserID: 7, body: incoming(0), want: "core"},
+		{name: "the payload carries no assignee", momoUserID: 7, body: payload(eventReceived), want: "core"},
+		{name: "no momo user id is configured", momoUserID: 0, body: incoming(9), want: "core"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := routing(t, tc.momoUserID, true, tc.body)
+			want := call{handler: tc.want, direction: "received",
+				message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("call = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestWhichOutgoingMessageIsRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "an operator wrote it", source: "user", want: "history"},
+		{name: "a workflow sent it", source: "workflow", want: "history"},
+		{name: "momo sent it through the API", source: "api", want: "core"},
+		{name: "a source momo does not know", source: "bot", want: "core"},
+		{name: "no sender block", source: "", want: "core"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := routing(t, 7, true, outgoing(tc.source))
+			want := call{handler: tc.want, direction: "sent",
+				message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("call = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestWithoutTheExtensionNothingIsRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		body      string
+		direction string
+	}{
+		{name: "an incoming message", body: incoming(9), direction: "received"},
+		{name: "an operator's message", body: outgoing("user"), direction: "sent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := routing(t, 0, false, tc.body)
+			want := call{handler: "core", direction: tc.direction,
+				message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("call = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// momo refuses the configuration rather than losing the messages of another
+// assignee in silence.
+func TestAMomoUserIDRequiresTheHistoryExtension(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		momoUserID int64
+		history    core.Handler
+		wantError  bool
+	}{
+		{name: "a user id without the extension", momoUserID: 7, wantError: true},
+		{name: "a user id with the extension", momoUserID: 7, history: capture{}},
+		{name: "no user id and no extension", momoUserID: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decode := func(v any) error {
+				s := v.(*settings)
+				s.ReceivedSecret = "a"
+				s.SentSecret = "b"
+				s.APIToken = "t"
+				s.MomoUserID = tc.momoUserID
+				return nil
+			}
+			_, err := New(context.Background(), decode, capture{}, tc.history)
+			if tc.wantError && err == nil {
+				t.Fatal("New succeeded, want an error naming the session history extension")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("New: %v", err)
+			}
+		})
+	}
+}
+
+type replyCapture struct{ replies chan core.Reply }
+
+func (c replyCapture) Received(_ context.Context, _ core.Message, reply core.Reply) error {
+	c.replies <- reply
+	return nil
+}
+
+func (c replyCapture) Sent(context.Context, core.Message) {}
+
+// The operator owns the conversation, so a record is given no reply: momo must not
+// be able to write into it.
+func TestARecordedMessageCannotAnswerTheContact(t *testing.T) {
+	replies := make(chan core.Reply, 1)
+	w := &webhook{secret: secret, momoUserID: 7,
+		core:    capture{name: "core", calls: make(chan call, 1)},
+		history: replyCapture{replies: replies},
+		client:  &client{}}
+	body := incoming(9)
+	if got := post(t, w, body, sign(body, secret)).Code; got != http.StatusOK {
+		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+	}
+	select {
+	case reply := <-replies:
+		if reply != nil {
+			t.Fatal("the record was given a reply, want none")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the history handler was not called")
 	}
 }
