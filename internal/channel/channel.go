@@ -41,17 +41,20 @@ type Config struct {
 // channel's lifetime: momo cancels it when it begins shutting down, and a
 // channel releases whatever it holds — open streams, goroutines, clients — when
 // that happens. The process decides when that is; a channel never watches for
-// it itself.
-type Factory func(lifetime context.Context, decode Decoder, h core.Handler) (Channel, error)
+// it itself. A channel that lets a human take a conversation over records what
+// the human writes through the recorder.
+type Factory func(lifetime context.Context, decode Decoder, h core.Handler, r core.Recorder) (Channel, error)
 
 var factories = map[string]Factory{}
 
 // qualifying prefixes a message's conversation with the channel's configured
-// name before the handler sees it. A channel never sees the qualified value, so
-// it cannot omit the name and cannot report another channel's name.
+// name before the handler or the recorder sees it. A channel never sees the
+// qualified value, so it cannot omit the name and cannot report another
+// channel's name.
 type qualifying struct {
 	name string
 	h    core.Handler
+	r    core.Recorder
 }
 
 func (q qualifying) qualify(m core.Message) core.Message {
@@ -65,6 +68,16 @@ func (q qualifying) Received(ctx context.Context, m core.Message, reply core.Rep
 
 func (q qualifying) Sent(ctx context.Context, m core.Message) {
 	q.h.Sent(ctx, q.qualify(m))
+}
+
+func (q qualifying) Enabled() bool { return q.r.Enabled() }
+
+func (q qualifying) RecordUser(ctx context.Context, m core.Message) error {
+	return q.r.RecordUser(ctx, q.qualify(m))
+}
+
+func (q qualifying) RecordAssistant(ctx context.Context, m core.Message) error {
+	return q.r.RecordAssistant(ctx, q.qualify(m))
 }
 
 // Register makes a channel available under the name operators use to configure
@@ -83,7 +96,7 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Config, h core.Handler) ([]Instance, error) {
+func Build(lifetime context.Context, configs map[string]Config, h core.Handler, r core.Recorder) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -94,7 +107,8 @@ func Build(lifetime context.Context, configs map[string]Config, h core.Handler) 
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualifying{name: name, h: h}))
+		qualified := qualifying{name: name, h: h, r: r}
+		c, err := f(lifetime, configs[name].Settings, delivery.Handler(qualified), qualified)
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

@@ -104,6 +104,42 @@ func TestRejectsUnknownAndMalformedSettings(t *testing.T) {
 	}
 }
 
+// historyBlock is what the session history sync extension decodes for itself.
+type historyBlock struct {
+	UserCommand      string `yaml:"user_command"`
+	AssistantCommand string `yaml:"assistant_command"`
+}
+
+func TestTheSessionHistoryBlockIsDecodedForTheExtension(t *testing.T) {
+	cfg := load(t, "session_history:\n  user_command: \"/history-user\"\n  assistant_command: \"/history-assistant\"\n")
+	var got historyBlock
+	if err := cfg.SessionHistory(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.UserCommand != "/history-user" || got.AssistantCommand != "/history-assistant" {
+		t.Fatalf("session_history = %+v, want /history-user and /history-assistant", got)
+	}
+}
+
+func TestNoSessionHistoryBlockLeavesTheExtensionUntouched(t *testing.T) {
+	cfg := load(t, "listen: \":9000\"\n")
+	got := historyBlock{UserCommand: "untouched"}
+	if err := cfg.SessionHistory(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got != (historyBlock{UserCommand: "untouched"}) {
+		t.Fatalf("session_history = %+v, want the untouched value", got)
+	}
+}
+
+func TestMisspelledSessionHistorySettingIsReported(t *testing.T) {
+	cfg := load(t, "session_history:\n  user_commnad: \"/history-user\"\n")
+	var got historyBlock
+	if err := cfg.SessionHistory(&got); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}
+
 func TestMissingFileIsReported(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load succeeded, want an error")

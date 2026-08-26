@@ -5,9 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +38,24 @@ func (c capture) Sent(ctx context.Context, m core.Message) {
 	c.calls <- call{direction: "sent", message: m, ctxErr: ctx.Err()}
 }
 
+type records struct {
+	enabled bool
+	err     error
+	calls   chan call
+}
+
+func (r records) Enabled() bool { return r.enabled }
+
+func (r records) RecordUser(_ context.Context, m core.Message) error {
+	r.calls <- call{direction: "user", message: m}
+	return r.err
+}
+
+func (r records) RecordAssistant(_ context.Context, m core.Message) error {
+	r.calls <- call{direction: "assistant", message: m}
+	return r.err
+}
+
 func sign(body, key string) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(body))
@@ -56,6 +76,120 @@ func post(t *testing.T, h http.Handler, body, signature string) *httptest.Respon
 func payload(eventType string) string {
 	return `{"event_type":"` + eventType + `","contact":{"id":12345},` +
 		`"message":{"message":{"type":"text","text":"hello"}}}`
+}
+
+// assigned answers an incoming event whose contact is assigned to the given
+// respond.io user. Zero leaves the conversation unassigned.
+func assigned(assigneeID int64) string {
+	contact := `{"id":12345}`
+	if assigneeID != 0 {
+		contact = `{"id":12345,"assignee":{"id":` + strconv.FormatInt(assigneeID, 10) + `}}`
+	}
+	return `{"event_type":"message.received","contact":` + contact +
+		`,"message":{"message":{"type":"text","text":"hello"}}}`
+}
+
+func from(source string) string {
+	return `{"event_type":"message.sent","contact":{"id":12345},"sender":{"source":"` + source + `"},` +
+		`"message":{"message":{"type":"text","text":"hello"}}}`
+}
+
+// deliver posts one signed event to a webhook and answers the single call it
+// caused.
+func deliver(t *testing.T, h *webhook, body string) call {
+	t.Helper()
+	if got := post(t, h, body, sign(body, secret)).Code; got != http.StatusOK {
+		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+	}
+	select {
+	case got := <-h.core.(capture).calls:
+		return got
+	case got := <-h.history.(records).calls:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("nothing was called")
+		return call{}
+	}
+}
+
+func syncing(momoUserID int64, recordErr error) *webhook {
+	shared := make(chan call, 2)
+	return &webhook{
+		secret:     secret,
+		core:       capture{calls: shared},
+		client:     &client{},
+		momoUserID: momoUserID,
+		history:    records{enabled: true, err: recordErr, calls: shared},
+	}
+}
+
+func TestAConversationAnotherAssigneeOwnsIsRecordedAndNotAnswered(t *testing.T) {
+	h := syncing(7, nil)
+	got := deliver(t, h, assigned(9))
+	want := call{direction: "user", message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("call = %+v, want %+v", got, want)
+	}
+}
+
+func TestMomoAnswersTheConversationsItOwns(t *testing.T) {
+	for name, tc := range map[string]struct {
+		momoUserID int64
+		body       string
+	}{
+		"assigned to momo":       {momoUserID: 7, body: assigned(7)},
+		"unassigned":             {momoUserID: 7, body: assigned(0)},
+		"no momo user id is set": {momoUserID: 0, body: assigned(9)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := deliver(t, syncing(tc.momoUserID, nil), tc.body)
+			want := call{direction: "received", message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("call = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestAnOutgoingMessageIsRecordedByItsSender(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body      string
+		direction string
+	}{
+		"a respond.io user": {body: from("user"), direction: "assistant"},
+		"a workflow":        {body: from("workflow"), direction: "assistant"},
+		"momo's own reply":  {body: from("bot"), direction: "sent"},
+		"an unnamed sender": {body: payload(eventSent), direction: "sent"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := deliver(t, syncing(7, nil), tc.body)
+			want := call{direction: tc.direction, message: core.Message{Conversation: "12345", Content: core.Text("hello")}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("call = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// TestAFailedRecordReachesNobodyInTheWorkspace pins that a record momo could not
+// write is a diagnosis for the log only: the contact hears nothing of it, and no
+// comment is added to the conversation.
+func TestAFailedRecordReachesNobodyInTheWorkspace(t *testing.T) {
+	calls := make(chan string, 2)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	h := syncing(7, errors.New("the agent does not know the command"))
+	h.client = &client{url: api.URL, token: "token", http: api.Client()}
+
+	deliver(t, h, assigned(9))
+	select {
+	case path := <-calls:
+		t.Fatalf("respond.io was called on %s, want no call", path)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestSignature(t *testing.T) {
@@ -185,7 +319,7 @@ func TestNewRoutes(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), yaml, capture{})
+	c, err := New(context.Background(), yaml, capture{}, records{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -210,8 +344,40 @@ func TestNewRequiresItsCredentials(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, records{}); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
+			}
+		})
+	}
+}
+
+// TestNewNeedsSessionHistorySyncForAMomoUserID pins what an assignee id is for:
+// momo answers only the conversations it owns, and the conversations a human owns
+// reach the agent as history records. Without the sync those messages would be
+// dropped in silence.
+func TestNewNeedsSessionHistorySyncForAMomoUserID(t *testing.T) {
+	for name, tc := range map[string]struct {
+		momoUserID int64
+		enabled    bool
+		wantError  bool
+	}{
+		"an assignee id without the sync": {momoUserID: 7, enabled: false, wantError: true},
+		"an assignee id with the sync":    {momoUserID: 7, enabled: true},
+		"no assignee id and no sync":      {momoUserID: 0, enabled: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			decode := func(v any) error {
+				s := v.(*settings)
+				s.ReceivedSecret, s.SentSecret, s.APIToken = "a", "b", "t"
+				s.MomoUserID = tc.momoUserID
+				return nil
+			}
+			_, err := New(context.Background(), decode, capture{}, records{enabled: tc.enabled})
+			if tc.wantError && err == nil {
+				t.Fatal("New succeeded, want an error naming the session history sync")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("New: %v", err)
 			}
 		})
 	}

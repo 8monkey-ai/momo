@@ -174,7 +174,7 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 			defer stop()
 			go func() { _ = serve(ctx, discard(), cfg, l) }()
 
-			post(t, l.Addr().String())
+			post(t, l.Addr().String(), `{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":"hi"}}}`)
 
 			for _, want := range tc.want {
 				select {
@@ -195,10 +195,8 @@ func TestAMessageOnRespondioIsAnsweredByTheAgent(t *testing.T) {
 	}
 }
 
-// post delivers one signed message.received webhook.
-func post(t *testing.T, address string) {
+func post(t *testing.T, address, event string) {
 	t.Helper()
-	event := `{"event_type":"message.received","contact":{"id":123},"message":{"message":{"type":"text","text":"hi"}}}`
 	mac := hmac.New(sha256.New, []byte("secret"))
 	mac.Write([]byte(event))
 	req, err := http.NewRequest(http.MethodPost, "http://"+address+"/respondio/received", strings.NewReader(event))
@@ -217,6 +215,52 @@ func post(t *testing.T, address string) {
 	}
 }
 
+// TestAMessageForAHumanAssigneeIsRecordedInsteadOfAnswered drives the whole
+// handover path: the conversation belongs to another respond.io user, so the
+// message reaches the agent as a history record and the contact gets no reply.
+func TestAMessageForAHumanAssigneeIsRecordedInsteadOfAnswered(t *testing.T) {
+	sent := make(chan string, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	trace := filepath.Join(t.TempDir(), "sessions")
+	t.Setenv("STUBAGENT_TRACE", trace)
+
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, buildStub(t))+
+		"session_history:\n  user_command: \"/history-user\"\n  assistant_command: \"/history-assistant\"\n"+
+		fmt.Sprintf("channels:\n  respondio:\n    received_secret: secret\n    sent_secret: other\n    api_token: token\n    api_url: %q\n    momo_user_id: 7\n", api.URL))
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() { _ = serve(ctx, discard(), cfg, l) }()
+
+	post(t, l.Addr().String(), `{"event_type":"message.received","contact":{"id":123,"assignee":{"id":9}},`+
+		`"message":{"message":{"type":"text","text":"hi"}}}`)
+
+	// The record runs one turn, so the agent opens a session for the conversation.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		raw, err := os.ReadFile(trace)
+		if err == nil && strings.Contains(string(raw), "session/new") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the agent never got the record; trace = %q, error = %v", raw, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case path := <-sent:
+		t.Fatalf("respond.io was called on %s, want no reply to the contact", path)
+	case <-time.After(time.Second):
+	}
+}
+
 // TestServeStopsWithoutAnAgent pins the required block: momo answers a message
 // with an agent, so a configuration with no agent never serves.
 func TestServeStopsWithoutAnAgent(t *testing.T) {
@@ -228,6 +272,22 @@ func TestServeStopsWithoutAnAgent(t *testing.T) {
 	defer func() { _ = l.Close() }()
 	if err := serve(context.Background(), discard(), cfg, l); err == nil {
 		t.Fatal("serve succeeded, want an error naming the agent configuration")
+	}
+}
+
+// TestServeStopsWhenAnAssigneeIdHasNoHistorySync pins that the two settings
+// belong together: without the sync, a message for a human assignee would be
+// dropped in silence.
+func TestServeStopsWhenAnAssigneeIdHasNoHistorySync(t *testing.T) {
+	cfg := loadConfig(t, "listen: \"127.0.0.1:0\"\n"+agentBlock(t, "/bin/true")+
+		"channels:\n  respondio:\n    received_secret: a\n    sent_secret: b\n    api_token: t\n    momo_user_id: 7\n")
+	l, err := listen(cfg)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	if err := serve(context.Background(), discard(), cfg, l); err == nil {
+		t.Fatal("serve succeeded, want an error naming the session history sync")
 	}
 }
 

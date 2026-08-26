@@ -18,6 +18,7 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistory"
 
 	_ "github.com/8monkey-ai/momo/internal/channel/acp"
 	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
@@ -111,7 +112,13 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a))
+	// The records run on the same agent as the turns, so a record and the turn of
+	// one conversation never run at the same time.
+	history, err := sessionhistory.New(log, cfg.SessionHistory, a)
+	if err != nil {
+		return fmt.Errorf("session_history: %w", err)
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history)
 	if err != nil {
 		return err
 	}

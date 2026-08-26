@@ -83,6 +83,20 @@ type Agent interface {
 	Turn(ctx context.Context, m Message, emit Emit) error
 }
 
+// Recorder writes a message into a conversation's agent session without
+// answering it, so the agent's history holds what a human wrote in its place.
+// The implementation is outside the core, and a deployment without history sync
+// gets one that records nothing.
+type Recorder interface {
+	// Enabled reports whether a record reaches the agent session. A channel whose
+	// settings need the sync refuses to start when it does not.
+	Enabled() bool
+	// RecordUser records what the contact wrote.
+	RecordUser(ctx context.Context, m Message) error
+	// RecordAssistant records what a human wrote to the contact in the agent's place.
+	RecordAssistant(ctx context.Context, m Message) error
+}
+
 // NewHandler answers each incoming message with the reply of one agent turn, on
 // the channel the message arrived on.
 func NewHandler(log *slog.Logger, a Agent) Handler {

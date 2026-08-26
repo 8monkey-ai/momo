@@ -34,6 +34,11 @@ const (
 	eventSent     = "message.sent"
 
 	textMessage = "text"
+
+	// Sender sources respond.io names for a message a human or a workflow sent, as
+	// opposed to one momo sent through the API.
+	senderUser     = "user"
+	senderWorkflow = "workflow"
 )
 
 type settings struct {
@@ -43,6 +48,9 @@ type settings struct {
 	SentPath       string `yaml:"sent_path"`
 	APIToken       string `yaml:"api_token"`
 	APIURL         string `yaml:"api_url"`
+	// MomoUserID is the respond.io user momo answers as. Zero leaves every
+	// conversation to momo.
+	MomoUserID int64 `yaml:"momo_user_id"`
 }
 
 type respondio struct {
@@ -54,7 +62,7 @@ func (r respondio) Routes() []channel.Route { return r.routes }
 // New configures the respond.io channel: one route per registered webhook, each
 // verified with that webhook's own signing key. respond.io holds nothing that
 // needs releasing at shutdown, so it ignores its lifetime.
-func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Channel, error) {
+func New(_ context.Context, decode channel.Decoder, h core.Handler, r core.Recorder) (channel.Channel, error) {
 	s := settings{
 		ReceivedPath: "/respondio/received",
 		SentPath:     "/respondio/sent",
@@ -70,24 +78,35 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler) (channel.Cha
 	if s.APIToken == "" {
 		return nil, errors.New("api_token is required")
 	}
+	if s.MomoUserID != 0 && !r.Enabled() {
+		return nil, errors.New("momo_user_id needs the session_history block, or the messages of a human assignee are lost")
+	}
 	c := &client{url: s.APIURL, token: s.APIToken, http: &http.Client{Timeout: 30 * time.Second}}
 	return respondio{routes: []channel.Route{
-		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c}},
-		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c}},
+		{Path: s.ReceivedPath, Handler: &webhook{secret: s.ReceivedSecret, core: h, client: c, momoUserID: s.MomoUserID, history: r}},
+		{Path: s.SentPath, Handler: &webhook{secret: s.SentSecret, core: h, client: c, momoUserID: s.MomoUserID, history: r}},
 	}}, nil
 }
 
 type webhook struct {
-	secret string
-	core   core.Handler
-	client *client
+	secret     string
+	core       core.Handler
+	client     *client
+	momoUserID int64
+	history    core.Recorder
 }
 
 type event struct {
 	EventType string `json:"event_type"`
 	Contact   struct {
-		ID int64 `json:"id"`
+		ID       int64 `json:"id"`
+		Assignee struct {
+			ID int64 `json:"id"`
+		} `json:"assignee"`
 	} `json:"contact"`
+	Sender struct {
+		Source string `json:"source"`
+	} `json:"sender"`
 	Message struct {
 		Message struct {
 			Type string `json:"type"`
@@ -133,16 +152,37 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 		// conversion happens here rather than in the core.
 		Content: core.Text(ev.Message.Message.Text),
 	}
-	switch ev.EventType {
-	case eventReceived:
+	switch {
+	case ev.EventType == eventReceived && h.humanOwns(ev):
+		// A human answers this conversation; a failed record is logged where it is
+		// written and never reaches the contact.
+		_ = h.history.RecordUser(ctx, m)
+	case ev.EventType == eventReceived:
 		if err := h.core.Received(ctx, m, h.client.reply(contactID)); err != nil {
 			h.report(ctx, contactID, err)
 		}
-	case eventSent:
-		// An outgoing message is momo's own reply as often as an operator's; nothing
-		// answers it.
+	case ev.EventType == eventSent && writtenInTheWorkspace(ev):
+		_ = h.history.RecordAssistant(ctx, m)
+	case ev.EventType == eventSent:
+		// What is left is momo's own reply; nothing answers it.
 		h.core.Sent(ctx, m)
 	}
+}
+
+// humanOwns treats an unassigned conversation as momo's, and every conversation
+// as momo's while no assignee id is configured.
+func (h *webhook) humanOwns(ev event) bool {
+	if h.momoUserID == 0 {
+		return false
+	}
+	assignee := ev.Contact.Assignee.ID
+	return assignee != 0 && assignee != h.momoUserID
+}
+
+// writtenInTheWorkspace excludes momo's own replies, which carry another sender
+// source.
+func writtenInTheWorkspace(ev event) bool {
+	return ev.Sender.Source == senderUser || ev.Sender.Source == senderWorkflow
 }
 
 // report tells the operators of the conversation that the message got no reply.

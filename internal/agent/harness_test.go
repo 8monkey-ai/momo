@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -149,6 +150,75 @@ func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("the conversation directory holds %d entries, want 0", len(entries))
+	}
+}
+
+// prompted answers the connection of the next prompt that reaches the stub's
+// synchronisation point, and nil when none reaches it within the wait.
+func prompted(t *testing.T, l net.Listener, wait time.Duration) net.Conn {
+	t.Helper()
+	if err := l.(*net.TCPListener).SetDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := l.Accept()
+	if err != nil {
+		return nil
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	return conn
+}
+
+// released lets a held prompt run to the end of its turn.
+func released(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestTurnsOfOneConversationRunOneAtATime holds the first prompt at the stub's
+// synchronisation point and waits for a second prompt that must not arrive: the
+// session of one conversation carries one prompt at a time, and a history record
+// is a turn like any other.
+func TestTurnsOfOneConversationRunOneAtATime(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	h, _ := harness(t)
+
+	failed := make(chan error, 2)
+	for _, text := range []string{"hi", "/history-user hi again"} {
+		go func() {
+			m := core.Message{Conversation: "respondio:1", Content: core.Text(text)}
+			failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
+		}()
+	}
+
+	first := prompted(t, l, 30*time.Second)
+	if first == nil {
+		t.Fatal("no prompt reached the agent")
+	}
+	if early := prompted(t, l, 500*time.Millisecond); early != nil {
+		_ = early.Close()
+		t.Fatal("a second prompt reached the agent while the first one was running")
+	}
+	released(t, first)
+
+	second := prompted(t, l, 30*time.Second)
+	if second == nil {
+		t.Fatal("the second prompt never reached the agent")
+	}
+	released(t, second)
+	for range 2 {
+		if err := <-failed; err != nil {
+			t.Fatalf("Turn: %v", err)
+		}
 	}
 }
 
