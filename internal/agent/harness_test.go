@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -194,6 +195,82 @@ func TestTurnsOfDifferentConversationsRunAtTheSameTime(t *testing.T) {
 			t.Fatalf("Turn: %v", err)
 		}
 	}
+}
+
+// TestTurnsOfTheSameConversationDoNotOverlap holds the first turn at its prompt
+// and pins that the second turn reaches the agent only once the first one is over.
+// A history record is a turn like any other, so it never runs beside the turn of a
+// message of the same conversation.
+func TestTurnsOfTheSameConversationDoNotOverlap(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	t.Setenv("STUBAGENT_SYNC_ADDR", l.Addr().String())
+	h, _ := harness(t)
+
+	failed := make(chan error, 2)
+	for range 2 {
+		go func() {
+			m := core.Message{Conversation: "respondio:1", Content: core.Text("hi")}
+			failed <- h.Turn(context.Background(), m, func([]core.ContentBlock) error { return nil })
+		}()
+	}
+
+	first := waitForPrompt(t, l)
+	if second := promptWithin(t, l, 200*time.Millisecond); second != nil {
+		_ = second.Close()
+		t.Fatal("two turns of one conversation reached the agent at the same time")
+	}
+	release(t, first)
+	release(t, waitForPrompt(t, l))
+	for range 2 {
+		if err := <-failed; err != nil {
+			t.Fatalf("Turn: %v", err)
+		}
+	}
+}
+
+// waitForPrompt answers the connection of the next prompt that reached the agent.
+func waitForPrompt(t *testing.T, l net.Listener) net.Conn {
+	t.Helper()
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		t.Fatalf("reading the prompt's mark: %v", err)
+	}
+	return conn
+}
+
+// promptWithin answers the connection of a prompt that reached the agent inside
+// the wait, and nil when none did.
+func promptWithin(t *testing.T, l net.Listener, wait time.Duration) net.Conn {
+	t.Helper()
+	tcp, ok := l.(*net.TCPListener)
+	if !ok {
+		t.Fatalf("listener is %T, want *net.TCPListener", l)
+	}
+	if err := tcp.SetDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tcp.SetDeadline(time.Time{}) }()
+	conn, err := tcp.Accept()
+	if err != nil {
+		return nil
+	}
+	return conn
+}
+
+// release lets a prompt held at the sync address finish.
+func release(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{'.'}); err != nil {
+		t.Fatalf("releasing a prompt: %v", err)
+	}
+	_ = conn.Close()
 }
 
 // TestTheSessionWorksInAnAbsoluteDirectory pins what ACP v1 requires of cwd: an

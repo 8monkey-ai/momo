@@ -89,6 +89,17 @@ agent:
   # How long one turn may take. Must be positive. Default: "30m"
   turn_timeout: "30m"
 
+# How momo keeps the agent's session in step with a conversation a human answers.
+# Optional: without the block momo answers every message itself and records
+# nothing.
+session_history_sync:
+  # Slash command of the agent that stores a message of the contact. Required
+  # with the block.
+  user_message_command: "/user-message"
+  # Slash command of the agent that stores a message of the assistant. Required
+  # with the block.
+  assistant_message_command: "/assistant-message"
+
 channels:
   respondio:
     # Signing key of the webhook that fires on incoming messages. Required.
@@ -103,6 +114,11 @@ channels:
     # Defaults: "/respondio/received" and "/respondio/sent"
     received_path: "/respondio/received"
     sent_path: "/respondio/sent"
+    # respond.io user momo answers as. A conversation another user is assigned to
+    # reaches the agent's session as history only, and the person answers it. 0
+    # leaves every conversation to momo. A value other than 0 needs the
+    # session_history_sync block. Default: 0
+    momo_assignee_id: 0
     # How momo delivers a reply on this channel. Every channel takes the block,
     # and the defaults send the whole reply as one message.
     delivery:
@@ -186,9 +202,67 @@ momo accepts and ignores them, so respond.io does not retry them and new event t
 respond.io adds later need no upgrade on your side.
 
 momo answers an incoming message with one call to respond.io's send-a-message API,
-`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. Outgoing
-messages (`message.sent`) are recorded only: they include momo's own replies, and
-answering them would make momo talk to itself.
+`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. An outgoing
+message (`message.sent`) is logged and answered by nothing: momo's own replies arrive as
+one, and answering them would make momo talk to itself. With session history sync the
+outgoing messages of your team reach the agent's session as well.
+
+## Hand a conversation to a human
+
+A person in the team inbox can take a conversation over, answer it, and hand it back. The
+agent keeps the whole conversation, its own turns and the human's answers alike, so its
+next turn reads what happened while it was silent.
+
+Set it up in four steps:
+
+1. In respond.io, give momo a user of its own and note that user's id.
+2. Put the id in `momo_assignee_id` in the `respondio` block.
+3. Add the `session_history_sync` block with the two slash commands of your agent.
+4. Restart momo.
+
+The agent must serve both commands, one that stores a message of the contact and one that
+stores a message of the assistant. momo sends each record as an ordinary prompt turn whose
+prompt is the command and the message text. momo asks the agent for nothing about the
+commands: an agent that does not serve them answers the record with its own text, which
+momo logs.
+
+Who owns a conversation decides what momo does with an incoming message:
+
+| Conversation | momo |
+| --- | --- |
+| unassigned | answers it |
+| assigned to `momo_assignee_id` | answers it |
+| assigned to anybody else | records it as a user message and stays silent |
+
+Without `momo_assignee_id`, or with it set to 0, every conversation is momo's. A momo that
+answers a conversation records nothing: the turn puts the message in the session itself.
+
+momo records two kinds of message:
+
+- the text a contact sent while another assignee held the conversation, as a user message
+- the text a respond.io user or a respond.io workflow sent, as an assistant message
+
+Text only, and each record is one line: a line break in the message reaches the command as
+a space. Attachments are not recorded, and momo's own replies are not recorded a second
+time.
+
+A record reaches nobody but the agent. A record that fails is reported in momo's log, as
+`history record failed` with the conversation and the reason, and never to the contact and
+never as a comment on the conversation. What the agent answered a record with is logged as
+`the agent answered a history record`, which is where an unsupported command shows up.
+
+Known limits:
+
+- A record takes the conversation's turn like a message does, so a record and an answer of
+  the same conversation never run at the same time, and each record starts the agent once.
+- momo reads the assignee of the message respond.io delivered, and asks the respond.io API
+  for nothing. A conversation reassigned between two messages is answered by whoever holds
+  it at the next message.
+- Attachments, and every content block that is not text, stay out of the session.
+- The ACP channel records nothing: an ACP client speaks for itself, and no human answers
+  in its place.
+- `momo_assignee_id` without `session_history_sync` is refused at startup: the
+  conversations of your team would otherwise reach neither momo nor the session.
 
 ## Connect an ACP client
 

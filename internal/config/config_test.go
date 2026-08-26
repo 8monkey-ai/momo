@@ -110,6 +110,49 @@ func TestMissingFileIsReported(t *testing.T) {
 	}
 }
 
+func TestTheSessionHistorySyncBlockDecodesIntoTheExtensionsOwnSettings(t *testing.T) {
+	cfg := load(t, "session_history_sync:\n  user_message_command: \"/user-message\"\n")
+	var s struct {
+		UserMessageCommand string `yaml:"user_message_command"`
+	}
+	if err := cfg.SessionHistorySync(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if s.UserMessageCommand != "/user-message" {
+		t.Errorf("user_message_command = %q, want \"/user-message\"", s.UserMessageCommand)
+	}
+}
+
+func TestNoSessionHistorySyncBlockAnswersNoDecoder(t *testing.T) {
+	cfg := load(t, "channels:\n  respondio:\n    api_token: a\n")
+	if cfg.SessionHistorySync != nil {
+		t.Error("session_history_sync has a decoder, want none for an absent block")
+	}
+}
+
+func TestAnEmptySessionHistorySyncBlockAnswersADecoder(t *testing.T) {
+	cfg := load(t, "session_history_sync:\n")
+	if cfg.SessionHistorySync == nil {
+		t.Fatal("session_history_sync has no decoder, want one for a present block")
+	}
+	var s struct {
+		UserMessageCommand string `yaml:"user_message_command"`
+	}
+	if err := cfg.SessionHistorySync(&s); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestMisspelledSessionHistorySyncSettingIsReported(t *testing.T) {
+	cfg := load(t, "session_history_sync:\n  user_mesage_command: \"/user-message\"\n")
+	var s struct {
+		UserMessageCommand string `yaml:"user_message_command"`
+	}
+	if err := cfg.SessionHistorySync(&s); err == nil {
+		t.Fatal("decode succeeded, want an error naming the unknown setting")
+	}
+}
+
 // delivery is the delivery a channel of the loaded configuration is built with.
 func delivery(t *testing.T, cfg *Config, name string) core.Delivery {
 	t.Helper()
