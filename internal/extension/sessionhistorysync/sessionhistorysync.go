@@ -25,11 +25,7 @@ type recorder struct {
 	assistant string
 }
 
-// New reads the session history sync block. It answers no history when decode is
-// nil, which is an absent block and leaves momo answering every message itself,
-// and refuses a block that does not name both commands: a session that holds the
-// contact's messages without the answers, or the answers without the messages, is
-// a session the agent reads wrongly.
+// New builds a recorder when session history sync is configured.
 func New(log *slog.Logger, decode func(any) error, a core.Agent) (core.History, error) {
 	if decode == nil {
 		return nil, nil
@@ -38,8 +34,8 @@ func New(log *slog.Logger, decode func(any) error, a core.Agent) (core.History, 
 	if err := decode(&s); err != nil {
 		return nil, err
 	}
-	if s.UserMessageCommand == "" || s.AssistantMessageCommand == "" {
-		return nil, errors.New("user_message_command and assistant_message_command are both required")
+	if !strings.HasPrefix(s.UserMessageCommand, "/") || !strings.HasPrefix(s.AssistantMessageCommand, "/") {
+		return nil, errors.New("user_message_command and assistant_message_command are both required and must start with \"/\"")
 	}
 	return recorder{log: log, agent: a, user: s.UserMessageCommand, assistant: s.AssistantMessageCommand}, nil
 }

@@ -83,6 +83,19 @@ func TestBothCommandsAreRequired(t *testing.T) {
 	}
 }
 
+func TestACommandMustStartWithASlash(t *testing.T) {
+	for name, body := range map[string]string{
+		"the user command":      "user_message_command: \"user-message\"\nassistant_message_command: \"/assistant-message\"\n",
+		"the assistant command": "user_message_command: \"/user-message\"\nassistant_message_command: \"assistant-message\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := New(discard(), decoder(body), &agent{}); err == nil {
+				t.Fatal("New succeeded, want an error for a command that does not start with \"/\"")
+			}
+		})
+	}
+}
+
 func TestARecordIsOnePromptTurnOfTheConversation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		record func(core.History, core.Message)
