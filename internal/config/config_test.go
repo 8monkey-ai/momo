@@ -111,15 +111,15 @@ func TestMissingFileIsReported(t *testing.T) {
 }
 
 func TestTheSessionHistorySyncBlockDecodesIntoTheExtensionsOwnSettings(t *testing.T) {
-	cfg := load(t, "session_history_sync:\n  user_message_command: \"/user-message\"\n")
+	cfg := load(t, "session_history_sync:\n  user_message_command: \"/add-user-message\"\n")
 	var s struct {
 		UserMessageCommand string `yaml:"user_message_command"`
 	}
 	if err := cfg.SessionHistorySync(&s); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if s.UserMessageCommand != "/user-message" {
-		t.Errorf("user_message_command = %q, want \"/user-message\"", s.UserMessageCommand)
+	if s.UserMessageCommand != "/add-user-message" {
+		t.Errorf("user_message_command = %q, want \"/add-user-message\"", s.UserMessageCommand)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestAnEmptySessionHistorySyncBlockAnswersADecoder(t *testing.T) {
 }
 
 func TestMisspelledSessionHistorySyncSettingIsReported(t *testing.T) {
-	cfg := load(t, "session_history_sync:\n  user_mesage_command: \"/user-message\"\n")
+	cfg := load(t, "session_history_sync:\n  user_mesage_command: \"/add-user-message\"\n")
 	var s struct {
 		UserMessageCommand string `yaml:"user_message_command"`
 	}

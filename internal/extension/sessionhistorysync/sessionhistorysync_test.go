@@ -27,7 +27,7 @@ func decoder(body string) func(any) error {
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-const commands = "user_message_command: \"/user-message\"\nassistant_message_command: \"/assistant-message\"\n"
+const commands = "user_message_command: \"/add-user-message\"\nassistant_message_command: \"/add-assistant-message\"\n"
 
 // agent answers a record turn with the text it was given and remembers the
 // prompts it received.
@@ -72,8 +72,8 @@ func TestWithoutTheBlockNothingIsRecorded(t *testing.T) {
 func TestBothCommandsAreRequired(t *testing.T) {
 	for name, body := range map[string]string{
 		"an empty block":             "",
-		"only the user command":      "user_message_command: \"/user-message\"\n",
-		"only the assistant command": "assistant_message_command: \"/assistant-message\"\n",
+		"only the user command":      "user_message_command: \"/add-user-message\"\n",
+		"only the assistant command": "assistant_message_command: \"/add-assistant-message\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := New(discard(), decoder(body), &agent{}); err == nil {
@@ -85,8 +85,8 @@ func TestBothCommandsAreRequired(t *testing.T) {
 
 func TestACommandMustStartWithASlash(t *testing.T) {
 	for name, body := range map[string]string{
-		"the user command":      "user_message_command: \"user-message\"\nassistant_message_command: \"/assistant-message\"\n",
-		"the assistant command": "user_message_command: \"/user-message\"\nassistant_message_command: \"assistant-message\"\n",
+		"the user command":      "user_message_command: \"user-message\"\nassistant_message_command: \"/add-assistant-message\"\n",
+		"the assistant command": "user_message_command: \"/add-user-message\"\nassistant_message_command: \"assistant-message\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := New(discard(), decoder(body), &agent{}); err == nil {
@@ -103,11 +103,11 @@ func TestARecordIsOnePromptTurnOfTheConversation(t *testing.T) {
 	}{
 		"a user message": {
 			record: func(h core.History, m core.Message) { h.RecordUser(context.Background(), m) },
-			want:   "/user-message hello",
+			want:   "/add-user-message hello",
 		},
 		"an assistant message": {
 			record: func(h core.History, m core.Message) { h.RecordAssistant(context.Background(), m) },
-			want:   "/assistant-message hello",
+			want:   "/add-assistant-message hello",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -131,7 +131,7 @@ func TestALineBreakBecomesASpace(t *testing.T) {
 	a := &agent{}
 	m := core.Message{Conversation: "respondio:1", Content: core.Text("first\nsecond\r\nthird\rfourth")}
 	history(t, discard(), a).RecordUser(context.Background(), m)
-	if got := core.TextOf(a.prompts[0].Content); got != "/user-message first second third fourth" {
+	if got := core.TextOf(a.prompts[0].Content); got != "/add-user-message first second third fourth" {
 		t.Fatalf("prompt = %q, want every line break as one space", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestOnlyTextIsRecorded(t *testing.T) {
 		{Type: "text", Text: "look at this"},
 	}}
 	history(t, discard(), a).RecordUser(context.Background(), m)
-	if got := core.TextOf(a.prompts[0].Content); got != "/user-message look at this" {
+	if got := core.TextOf(a.prompts[0].Content); got != "/add-user-message look at this" {
 		t.Fatalf("prompt = %q, want the text of the message only", got)
 	}
 }
@@ -171,8 +171,8 @@ func TestAFailedRecordIsLogged(t *testing.T) {
 // support the command: momo verifies no command, so what the agent answered is
 // the only sign the record did not land.
 func TestTheAnswerToARecordIsLogged(t *testing.T) {
-	got := logged(t, &agent{answer: []string{"unknown command: ", "/user-message"}})
-	for _, want := range []string{"respondio:1", "unknown command:  /user-message"} {
+	got := logged(t, &agent{answer: []string{"unknown command: ", "/add-user-message"}})
+	for _, want := range []string{"respondio:1", "unknown command:  /add-user-message"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log =\n%s\nwant a record naming %q", got, want)
 		}
