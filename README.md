@@ -95,10 +95,10 @@ agent:
 session_history_sync:
   # Slash command of the agent that stores a message of the contact. Required
   # with the block.
-  user_message_command: "/user-message"
+  user_message_command: "/add-user-message"
   # Slash command of the agent that stores a message of the assistant. Required
   # with the block.
-  assistant_message_command: "/assistant-message"
+  assistant_message_command: "/add-assistant-message"
 
 channels:
   respondio:
