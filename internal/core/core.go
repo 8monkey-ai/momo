@@ -71,6 +71,18 @@ type Handler interface {
 	Sent(ctx context.Context, m Message)
 }
 
+// History puts a message no turn of momo produced into the conversation's agent
+// session: the contact's message a human answered, and that human's answer. A
+// channel built without one has no history sync configured, and every message it
+// receives is one momo acts on itself.
+//
+// A record reaches nobody but the agent, so a record that fails is reported in
+// momo's log and never on the channel.
+type History interface {
+	RecordUser(ctx context.Context, m Message)
+	RecordAssistant(ctx context.Context, m Message)
+}
+
 // Emit delivers one part of a turn's reply. The agent calls it as the content
 // arrives. It does not block and returns the error of an earlier part, so an
 // agent talking to a broken channel stops generating.

@@ -235,7 +235,7 @@ func TestNewDefaultsTheAPIURL(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{})
+	c, err := New(context.Background(), decode, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

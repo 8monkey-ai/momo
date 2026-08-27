@@ -18,6 +18,7 @@ import (
 	"github.com/8monkey-ai/momo/internal/channel"
 	"github.com/8monkey-ai/momo/internal/config"
 	"github.com/8monkey-ai/momo/internal/core"
+	"github.com/8monkey-ai/momo/internal/extension/sessionhistorysync"
 
 	_ "github.com/8monkey-ai/momo/internal/channel/acp"
 	_ "github.com/8monkey-ai/momo/internal/channel/respondio"
@@ -111,7 +112,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a))
+	history, err := sessionhistorysync.New(log, cfg.SessionHistorySync, a)
+	if err != nil {
+		return fmt.Errorf("session history sync: %w", err)
+	}
+	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history)
 	if err != nil {
 		return err
 	}

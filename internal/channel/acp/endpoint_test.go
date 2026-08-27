@@ -583,7 +583,7 @@ func TestNewRejectsUnusableSettings(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
 				t.Fatal("New succeeded, want an error naming the unusable setting")
 			}
 		})
@@ -599,7 +599,7 @@ func TestNewServesTheConfiguredPath(t *testing.T) {
 		s.Token = token
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{})
+	c, err := New(context.Background(), decode, capture{}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
