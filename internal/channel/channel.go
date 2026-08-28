@@ -6,6 +6,7 @@ package channel
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -43,7 +44,7 @@ type Config struct {
 // that happens. The process decides when that is; a channel never watches for
 // it itself. The history is nil when the operator configured no session history
 // sync, so a channel whose settings need one refuses them.
-type Factory func(lifetime context.Context, decode Decoder, h core.Handler, history core.History) (Channel, error)
+type Factory func(lifetime context.Context, decode Decoder, h core.Handler, history core.History, files core.ConversationFiles) (Channel, error)
 
 var factories = map[string]Factory{}
 
@@ -55,6 +56,7 @@ type qualifying struct {
 	name    string
 	h       core.Handler
 	history core.History
+	files   core.ConversationFiles
 }
 
 func (q qualifying) qualify(m core.Message) core.Message {
@@ -78,6 +80,10 @@ func (q qualifying) RecordAssistant(ctx context.Context, m core.Message) {
 	q.history.RecordAssistant(ctx, q.qualify(m))
 }
 
+func (q qualifying) Save(ctx context.Context, conversation, name string, r io.Reader) (string, string, error) {
+	return q.files.Save(ctx, q.name+":"+conversation, name, r)
+}
+
 // Register makes a channel available under the name operators use to configure
 // it. It is meant to be called from a package's init.
 func Register(name string, f Factory) {
@@ -94,7 +100,7 @@ type Instance struct {
 }
 
 // Build builds every configured channel, in a stable order.
-func Build(lifetime context.Context, configs map[string]Config, h core.Handler, history core.History) ([]Instance, error) {
+func Build(lifetime context.Context, configs map[string]Config, h core.Handler, history core.History, files core.ConversationFiles) ([]Instance, error) {
 	instances := make([]Instance, 0, len(configs))
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
 		f, known := factories[name]
@@ -105,14 +111,18 @@ func Build(lifetime context.Context, configs map[string]Config, h core.Handler, 
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}
-		q := qualifying{name: name, h: h, history: history}
+		q := qualifying{name: name, h: h, history: history, files: files}
 		// A channel reads an absent history to refuse a setting that needs one, so a
 		// wrapper around nothing must not look like one.
 		var recording core.History
 		if history != nil {
 			recording = q
 		}
-		c, err := f(lifetime, configs[name].Settings, delivery.Handler(q), recording)
+		var storing core.ConversationFiles
+		if files != nil {
+			storing = q
+		}
+		c, err := f(lifetime, configs[name].Settings, delivery.Handler(q), recording, storing)
 		if err != nil {
 			return nil, fmt.Errorf("channel %q: %w", name, err)
 		}

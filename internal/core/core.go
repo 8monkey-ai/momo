@@ -20,14 +20,16 @@ type ContentBlock struct {
 	MimeType string    `json:"mimeType,omitempty"`
 	URI      string    `json:"uri,omitempty"`
 	Name     string    `json:"name,omitempty"`
+	Size     int64     `json:"size,omitempty"`
 	Resource *Resource `json:"resource,omitempty"`
 }
 
 // Resource is the contents an embedded resource block carries.
 type Resource struct {
-	URI  string `json:"uri"`
-	Text string `json:"text,omitempty"`
-	Blob string `json:"blob,omitempty"`
+	URI      string `json:"uri"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 // Text is a text content block, the shape a channel with plain text messages

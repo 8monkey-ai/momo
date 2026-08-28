@@ -39,7 +39,7 @@ func yamlDecoder(body string) Decoder {
 }
 
 func stub(name string) Factory {
-	return func(context.Context, Decoder, core.Handler, core.History) (Channel, error) {
+	return func(context.Context, Decoder, core.Handler, core.History, core.ConversationFiles) (Channel, error) {
 		return fixed{routes: []Route{{Path: "/" + name}}}, nil
 	}
 }
@@ -62,7 +62,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 	Register("stub-b", stub("b"))
 	Register("stub-a", stub("a"))
 
-	got, err := Build(context.Background(), configured("stub-b", "stub-a"), nil, nil)
+	got, err := Build(context.Background(), configured("stub-b", "stub-a"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildsRegisteredChannelsInAStableOrder(t *testing.T) {
 }
 
 func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
-	if _, err := Build(context.Background(), configured("telegran"), nil, nil); err == nil {
+	if _, err := Build(context.Background(), configured("telegran"), nil, nil, nil); err == nil {
 		t.Fatal("Build succeeded, want an error naming the unknown channel")
 	}
 }
@@ -80,9 +80,11 @@ func TestBuildRejectsUnconfiguredChannelName(t *testing.T) {
 func TestBuildReportsWhichChannelFailed(t *testing.T) {
 	isolateFactories(t)
 	broken := errors.New("missing signing key")
-	Register("stub-broken", func(context.Context, Decoder, core.Handler, core.History) (Channel, error) { return nil, broken })
+	Register("stub-broken", func(context.Context, Decoder, core.Handler, core.History, core.ConversationFiles) (Channel, error) {
+		return nil, broken
+	})
 
-	_, err := Build(context.Background(), configured("stub-broken"), nil, nil)
+	_, err := Build(context.Background(), configured("stub-broken"), nil, nil, nil)
 	if !errors.Is(err, broken) {
 		t.Fatalf("error = %v, want it to wrap %v", err, broken)
 	}
@@ -92,7 +94,7 @@ func TestBuildReportsWhichChannelFailed(t *testing.T) {
 // in both directions, so a test can observe what the handler sees. What the
 // handler reports about the incoming message reaches failed.
 func deliver(conversation string, failed *error) Factory {
-	return func(_ context.Context, _ Decoder, h core.Handler, _ core.History) (Channel, error) {
+	return func(_ context.Context, _ Decoder, h core.Handler, _ core.History, _ core.ConversationFiles) (Channel, error) {
 		m := core.Message{Conversation: conversation, Content: core.Text("hello")}
 		err := h.Received(context.Background(), m, func(context.Context, []core.ContentBlock) error { return nil })
 		if failed != nil {
@@ -131,7 +133,7 @@ func (r *recorder) RecordAssistant(_ context.Context, m core.Message) {
 // records is a channel that records one message of each kind in the history it
 // was built with.
 func records(conversation string) Factory {
-	return func(_ context.Context, _ Decoder, _ core.Handler, history core.History) (Channel, error) {
+	return func(_ context.Context, _ Decoder, _ core.Handler, history core.History, _ core.ConversationFiles) (Channel, error) {
 		m := core.Message{Conversation: conversation, Content: core.Text("hello")}
 		history.RecordUser(context.Background(), m)
 		history.RecordAssistant(context.Background(), m)
@@ -147,7 +149,7 @@ func TestAHistoryRecordIsQualifiedWithTheChannelName(t *testing.T) {
 	Register("respondio", records("123"))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio"), got, got); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), got, got, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.recordedUser) != 1 || got.recordedUser[0] != "respondio:123" {
@@ -165,12 +167,12 @@ func TestAChannelSeesNoHistoryWhenNoneIsConfigured(t *testing.T) {
 	isolateFactories(t)
 	var got core.History
 	seen := false
-	Register("respondio", func(_ context.Context, _ Decoder, _ core.Handler, history core.History) (Channel, error) {
+	Register("respondio", func(_ context.Context, _ Decoder, _ core.Handler, history core.History, _ core.ConversationFiles) (Channel, error) {
 		got, seen = history, true
 		return fixed{}, nil
 	})
 
-	if _, err := Build(context.Background(), configured("respondio"), &recorder{}, nil); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), &recorder{}, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if !seen {
@@ -181,13 +183,50 @@ func TestAChannelSeesNoHistoryWhenNoneIsConfigured(t *testing.T) {
 	}
 }
 
+type fileSave struct {
+	conversation string
+	name         string
+	body         string
+}
+
+func (s *fileSave) Save(_ context.Context, conversation, name string, r io.Reader) (string, string, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return "", "", err
+	}
+	s.conversation, s.name, s.body = conversation, name, string(body)
+	return name, "file:///saved/" + name, nil
+}
+
+func TestChannelFileSavesUseTheQualifiedConversation(t *testing.T) {
+	isolateFactories(t)
+	store := &fileSave{}
+	Register("respondio", func(_ context.Context, _ Decoder, _ core.Handler, _ core.History, files core.ConversationFiles) (Channel, error) {
+		name, uri, err := files.Save(context.Background(), "123", "notes.txt", strings.NewReader("hello"))
+		if err != nil {
+			return nil, err
+		}
+		if name != "notes.txt" || uri != "file:///saved/notes.txt" {
+			t.Fatalf("Save returned %q, %q", name, uri)
+		}
+		return fixed{}, nil
+	})
+
+	if _, err := Build(context.Background(), configured("respondio"), &recorder{}, nil, store); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if *store != (fileSave{conversation: "respondio:123", name: "notes.txt", body: "hello"}) {
+		t.Fatalf("save = %+v, want a qualified conversation and unchanged stream details", store)
+	}
+}
+
 func TestHandlerSeesTheConversationQualifiedWithTheChannelName(t *testing.T) {
 	isolateFactories(t)
 	Register("respondio", deliver("123", nil))
 	Register("acp", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio", "acp"), got, nil); err != nil {
+	if _, err := Build(context.Background(), configured("respondio", "acp"), got, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 2 || got.received[0] != "acp:123" || got.received[1] != "respondio:123" {
@@ -200,7 +239,7 @@ func TestSentIsQualifiedWithTheChannelName(t *testing.T) {
 	Register("respondio", deliver("123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio"), got, nil); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), got, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.sent) != 1 || got.sent[0] != "respondio:123" {
@@ -214,7 +253,7 @@ func TestChannelLearnsThatTheTurnFailed(t *testing.T) {
 	Register("respondio", deliver("123", &failed))
 	turn := errors.New("the agent exited before it replied")
 
-	if _, err := Build(context.Background(), configured("respondio"), &recorder{err: turn}, nil); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), &recorder{err: turn}, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if !errors.Is(failed, turn) {
@@ -227,7 +266,7 @@ func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
 	Register("respondio", deliver("acp:123", nil))
 	got := &recorder{}
 
-	if _, err := Build(context.Background(), configured("respondio"), got, nil); err != nil {
+	if _, err := Build(context.Background(), configured("respondio"), got, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(got.received) != 1 || got.received[0] != "respondio:acp:123" {
@@ -238,7 +277,7 @@ func TestChannelCannotSupplyTheChannelPartItself(t *testing.T) {
 // replies is a channel that hands one message to the handler and records the text
 // of every reply the turn delivered.
 func replies(texts *[]string) Factory {
-	return func(_ context.Context, _ Decoder, h core.Handler, _ core.History) (Channel, error) {
+	return func(_ context.Context, _ Decoder, h core.Handler, _ core.History, _ core.ConversationFiles) (Channel, error) {
 		m := core.Message{Conversation: "1", Content: core.Text("hi")}
 		record := func(_ context.Context, content []core.ContentBlock) error {
 			*texts = append(*texts, core.TextOf(content))
@@ -268,7 +307,7 @@ func TestEachChannelDeliversWithItsOwnSettings(t *testing.T) {
 	}
 	h := core.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), twoParagraphs{})
 
-	if _, err := Build(context.Background(), configs, h, nil); err != nil {
+	if _, err := Build(context.Background(), configs, h, nil, nil); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(split) != 2 || split[0] != "first" || split[1] != "second" {
@@ -286,7 +325,7 @@ func TestBuildRefusesADeliveryItCannotPace(t *testing.T) {
 		"respondio": {Settings: noSettings, Delivery: yamlDecoder("words_per_minute: -1\n")},
 	}
 
-	_, err := Build(context.Background(), configs, nil, nil)
+	_, err := Build(context.Background(), configs, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "respondio") || !strings.Contains(err.Error(), "words_per_minute") {
 		t.Fatalf("Build error = %v, want it to name the channel and the setting", err)
 	}

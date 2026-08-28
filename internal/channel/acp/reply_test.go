@@ -50,14 +50,19 @@ func TestEchoRepliesOnTheSessionStreamBeforeAnsweringThePrompt(t *testing.T) {
 	h := newEchoHarness(t)
 	connID, sessionID, connStream, sessionStream := h.session(t)
 
-	// An audio block is a type momo does not read: it travels back unchanged.
 	h.prompt(t, connID, sessionID, `{"type":"text","text":"hello"},`+
 		`{"type":"audio","data":"AAAA","mimeType":"audio/wav"},`+
+		`{"type":"resource","resource":{"uri":"file:///notes.md","text":"notes","mimeType":"text/markdown"}},`+
+		`{"type":"resource_link","uri":"file:///notes.md","name":"notes.md","mimeType":"text/markdown","size":42},`+
 		`{"type":"text","text":"again"}`)
 
 	want := []core.ContentBlock{
 		{Type: "text", Text: "hello"},
 		{Type: "audio", Data: "AAAA", MimeType: "audio/wav"},
+		{Type: "resource", Resource: &core.Resource{
+			URI: "file:///notes.md", Text: "notes", MimeType: "text/markdown",
+		}},
+		{Type: "resource_link", URI: "file:///notes.md", Name: "notes.md", MimeType: "text/markdown", Size: 42},
 		{Type: "text", Text: "again"},
 	}
 	for i, block := range want {

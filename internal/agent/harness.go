@@ -2,13 +2,21 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/8monkey-ai/momo/internal/core"
 )
@@ -82,11 +90,140 @@ func (h *Harness) Turn(ctx context.Context, m core.Message, emit core.Emit) erro
 		return fmt.Errorf("waiting for the conversation: %w", err)
 	}
 	defer release()
-	dir := filepath.Join(h.dataDir, dirName(m.Conversation))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir, err := h.conversationDir(m.Conversation)
+	if err != nil {
 		return err
 	}
 	return h.run(ctx, dir, m.Content, emit)
+}
+
+// Save stores a stream where the conversation's agent process can read it.
+func (h *Harness) Save(ctx context.Context, conversation, name string, r io.Reader) (string, string, error) {
+	root, dir, err := h.openConversationDir(conversation)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = root.Close() }()
+
+	temp, tempName, err := createTemp(root)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		_ = temp.Close()
+		_ = root.Remove(tempName)
+	}()
+	if _, err := io.Copy(temp, contextReader{ctx: ctx, r: r}); err != nil {
+		return "", "", fmt.Errorf("save %q: %w", name, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	if err := temp.Close(); err != nil {
+		return "", "", fmt.Errorf("save %q: %w", name, err)
+	}
+
+	safeName, err := place(root, tempName, safeFileName(name))
+	if err != nil {
+		return "", "", fmt.Errorf("save %q: %w", name, err)
+	}
+	absolute := filepath.Join(dir, safeName)
+	uriPath := filepath.ToSlash(absolute)
+	if filepath.VolumeName(absolute) != "" {
+		uriPath = "/" + uriPath
+	}
+	return safeName, (&url.URL{Scheme: "file", Path: uriPath}).String(), nil
+}
+
+func (h *Harness) conversationDir(conversation string) (string, error) {
+	root, dir, err := h.openConversationDir(conversation)
+	if root != nil {
+		_ = root.Close()
+	}
+	return dir, err
+}
+
+func (h *Harness) openConversationDir(conversation string) (*os.Root, string, error) {
+	data, err := os.OpenRoot(h.dataDir)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = data.Close() }()
+	name := dirName(conversation)
+	if err := data.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, "", err
+	}
+	root, err := data.OpenRoot(name)
+	if err != nil {
+		return nil, "", err
+	}
+	return root, filepath.Join(h.dataDir, name), nil
+}
+
+func createTemp(root *os.Root) (*os.File, string, error) {
+	for {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", err
+		}
+		name := ".momo-" + hex.EncodeToString(random[:]) + ".tmp"
+		file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return file, name, err
+	}
+}
+
+func safeFileName(name string) string {
+	name = path.Base(strings.ReplaceAll(name, `\`, "/"))
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
+	if name == "" || name == "." || name == ".." || name == "/" {
+		return "attachment"
+	}
+	return name
+}
+
+func place(root *os.Root, tempName, name string) (string, error) {
+	for copy := 1; ; copy++ {
+		candidate := numberedName(name, copy)
+		err := root.Link(tempName, candidate)
+		if err == nil {
+			return candidate, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+}
+
+func numberedName(name string, copy int) string {
+	if copy == 1 {
+		return name
+	}
+	ext := path.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	if stem == "" {
+		stem, ext = name, ""
+	}
+	return fmt.Sprintf("%s-%d%s", stem, copy, ext)
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
 
 // acquire holds the conversation for one turn. Each conversation has a channel of

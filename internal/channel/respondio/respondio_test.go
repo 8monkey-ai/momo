@@ -303,7 +303,7 @@ func TestNewRoutes(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), yaml, capture{}, nil)
+	c, err := New(context.Background(), yaml, capture{}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestNewRequiresItsCredentials(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil, nil); err == nil {
 				t.Fatal("New succeeded, want an error about the missing signing keys")
 			}
 		})
@@ -356,7 +356,7 @@ func TestAMomoAssigneeIDNeedsHistorySync(t *testing.T) {
 				s.MomoAssigneeID = tc.momoAssigneeID
 				return nil
 			}
-			_, err := New(context.Background(), decode, capture{}, tc.history)
+			_, err := New(context.Background(), decode, capture{}, tc.history, nil)
 			if tc.valid && err != nil {
 				t.Fatalf("New: %v", err)
 			}

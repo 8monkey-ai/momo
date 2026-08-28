@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -150,6 +151,167 @@ func TestTheConversationDirectoryExistsAndIsEmpty(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("the conversation directory holds %d entries, want 0", len(entries))
+	}
+}
+
+func TestSaveStoresAStreamInTheTurnConversationDirectory(t *testing.T) {
+	h, root := harness(t)
+	safeName, uri, err := h.Save(context.Background(), "respondio:1", "notes 1.txt", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if safeName != "notes 1.txt" {
+		t.Fatalf("safe name = %q, want %q", safeName, "notes 1.txt")
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("file URI = %q: %v", uri, err)
+	}
+	wantPath := filepath.Join(root, dirName("respondio:1"), "notes 1.txt")
+	if parsed.Scheme != "file" || parsed.Path != filepath.ToSlash(wantPath) {
+		t.Fatalf("file URI = %q, want the absolute path %q", uri, wantPath)
+	}
+	got, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("reading saved file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("saved file = %q, want %q", got, "hello")
+	}
+}
+
+func TestSaveDoesNotOverwriteAPreExistingRegularFile(t *testing.T) {
+	h, root := harness(t)
+	dir := filepath.Join(root, dirName("respondio:1"))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(original, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	name, _, err := h.Save(context.Background(), "respondio:1", "notes.txt", strings.NewReader("new"))
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if name != "notes-2.txt" {
+		t.Fatalf("safe name = %q, want %q", name, "notes-2.txt")
+	}
+	for path, want := range map[string]string{original: "original", filepath.Join(dir, name): "new"} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestSaveDoesNotFollowATargetFileSymlink(t *testing.T) {
+	h, root := harness(t)
+	dir := filepath.Join(root, dirName("respondio:1"))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "notes.txt")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	name, _, err := h.Save(context.Background(), "respondio:1", "notes.txt", strings.NewReader("inside"))
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if name != "notes-2.txt" {
+		t.Fatalf("safe name = %q, want %q", name, "notes-2.txt")
+	}
+	for path, want := range map[string]string{outside: "outside", filepath.Join(dir, name): "inside"} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestSaveMakesNamesSafeAndDoesNotOverwrite(t *testing.T) {
+	h, _ := harness(t)
+	for _, tc := range []struct{ proposed, want string }{
+		{proposed: "../notes.txt", want: "notes.txt"},
+		{proposed: `folder\\photo.jpg`, want: "photo.jpg"},
+		{proposed: "bad\x00\nname.txt", want: "badname.txt"},
+		{proposed: "..", want: "attachment"},
+		{proposed: "", want: "attachment-2"},
+		{proposed: "notes.txt", want: "notes-2.txt"},
+	} {
+		got, _, err := h.Save(context.Background(), "respondio:1", tc.proposed, strings.NewReader(tc.proposed))
+		if err != nil {
+			t.Fatalf("Save(%q): %v", tc.proposed, err)
+		}
+		if got != tc.want {
+			t.Fatalf("Save(%q) name = %q, want %q", tc.proposed, got, tc.want)
+		}
+	}
+}
+
+type failingReader struct{ read bool }
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if !r.read {
+		r.read = true
+		return copy(p, "partial"), nil
+	}
+	return 0, errors.New("read failed")
+}
+
+func TestSaveCleansTemporaryFilesAfterErrorsAndCancellation(t *testing.T) {
+	for name, ctxAndReader := range map[string]func() (context.Context, io.Reader){
+		"read error": func() (context.Context, io.Reader) { return context.Background(), &failingReader{} },
+		"cancelled": func() (context.Context, io.Reader) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, strings.NewReader("data")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, root := harness(t)
+			ctx, r := ctxAndReader()
+			if _, _, err := h.Save(ctx, "respondio:1", "notes.txt", r); err == nil {
+				t.Fatal("Save succeeded, want an error")
+			}
+			entries, err := os.ReadDir(filepath.Join(root, dirName("respondio:1")))
+			if err != nil {
+				t.Fatalf("reading conversation directory: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("conversation directory contains %v, want no partial file", entries)
+			}
+		})
+	}
+}
+
+func TestSaveDoesNotFollowAConversationSymlinkOutsideTheDataDirectory(t *testing.T) {
+	h, root := harness(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, dirName("respondio:1"))); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if _, _, err := h.Save(context.Background(), "respondio:1", "notes.txt", strings.NewReader("secret")); err == nil {
+		t.Fatal("Save followed a conversation symlink outside the data directory")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("outside directory contains %v, want no files", entries)
 	}
 }
 
