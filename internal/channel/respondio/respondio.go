@@ -39,7 +39,8 @@ const (
 	senderUser     = "user"
 	senderWorkflow = "workflow"
 
-	textMessage = "text"
+	textMessage       = "text"
+	attachmentMessage = "attachment"
 )
 
 type settings struct {
@@ -51,7 +52,8 @@ type settings struct {
 	APIURL         string `yaml:"api_url"`
 	// MomoAssigneeID is the respond.io user momo answers as. Zero leaves every
 	// conversation to momo.
-	MomoAssigneeID int64 `yaml:"momo_assignee_id"`
+	MomoAssigneeID     int64 `yaml:"momo_assignee_id"`
+	MaxAttachmentBytes int64 `yaml:"max_attachment_bytes"`
 }
 
 type respondio struct {
@@ -63,11 +65,12 @@ func (r respondio) Routes() []channel.Route { return r.routes }
 // New configures the respond.io channel: one route per registered webhook, each
 // verified with that webhook's own signing key. respond.io holds nothing that
 // needs releasing at shutdown, so it ignores its lifetime.
-func New(_ context.Context, decode channel.Decoder, h core.Handler, history core.History) (channel.Channel, error) {
+func New(_ context.Context, decode channel.Decoder, h core.Handler, history core.History, files core.ConversationFiles) (channel.Channel, error) {
 	s := settings{
-		ReceivedPath: "/respondio/received",
-		SentPath:     "/respondio/sent",
-		APIURL:       "https://api.respond.io/v2",
+		ReceivedPath:       "/respondio/received",
+		SentPath:           "/respondio/sent",
+		APIURL:             "https://api.respond.io/v2",
+		MaxAttachmentBytes: 20_000_000,
 	}
 	if err := decode(&s); err != nil {
 		return nil, err
@@ -82,6 +85,9 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler, history core
 	if s.MomoAssigneeID < 0 {
 		return nil, errors.New("momo_assignee_id cannot be negative")
 	}
+	if s.MaxAttachmentBytes <= 0 {
+		return nil, errors.New("max_attachment_bytes must be positive")
+	}
 	// An assignee id leaves the conversations of the team inbox to the people who
 	// hold them, and those conversations reach the agent as history only.
 	if s.MomoAssigneeID != 0 && history == nil {
@@ -89,7 +95,10 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler, history core
 	}
 	c := &client{url: s.APIURL, token: s.APIToken, http: &http.Client{Timeout: 30 * time.Second}}
 	signedWith := func(secret string) *webhook {
-		return &webhook{secret: secret, core: h, history: history, client: c, momoAssigneeID: s.MomoAssigneeID}
+		return &webhook{
+			secret: secret, core: h, history: history, client: c, files: files,
+			momoAssigneeID: s.MomoAssigneeID, maxAttachmentBytes: s.MaxAttachmentBytes,
+		}
 	}
 	return respondio{routes: []channel.Route{
 		{Path: s.ReceivedPath, Handler: signedWith(s.ReceivedSecret)},
@@ -98,11 +107,13 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler, history core
 }
 
 type webhook struct {
-	secret         string
-	core           core.Handler
-	history        core.History
-	client         *client
-	momoAssigneeID int64
+	secret             string
+	core               core.Handler
+	history            core.History
+	client             *client
+	files              core.ConversationFiles
+	momoAssigneeID     int64
+	maxAttachmentBytes int64
 }
 
 type event struct {
@@ -120,8 +131,9 @@ type event struct {
 	} `json:"sender"`
 	Message struct {
 		Message struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type       string     `json:"type"`
+			Text       string     `json:"text"`
+			Attachment attachment `json:"attachment"`
 		} `json:"message"`
 	} `json:"message"`
 }
@@ -153,21 +165,25 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // dispatch ignores event types it does not act on, so respond.io can add new
 // ones without momo failing.
 func (h *webhook) dispatch(ctx context.Context, ev event) {
-	if ev.Message.Message.Type != textMessage {
-		return
-	}
 	contactID := strconv.FormatInt(ev.Contact.ID, 10)
-	m := core.Message{
-		Conversation: contactID,
-		// respond.io speaks plain text; the core's content blocks are ACP's, so the
-		// conversion happens here rather than in the core.
-		Content: core.Text(ev.Message.Message.Text),
-	}
-	switch ev.EventType {
-	case eventReceived:
+	switch ev.Message.Message.Type {
+	case textMessage:
+		m := core.Message{Conversation: contactID, Content: core.Text(ev.Message.Message.Text)}
+		switch ev.EventType {
+		case eventReceived:
+			h.received(ctx, contactID, m, ev.Contact.Assignee.ID)
+		case eventSent:
+			h.sent(ctx, m, ev.Sender.Source)
+		}
+	case attachmentMessage:
+		if ev.EventType != eventReceived || !h.owns(ev.Contact.Assignee.ID) {
+			return
+		}
+		m := core.Message{
+			Conversation: contactID,
+			Content:      h.attachmentContent(ctx, contactID, []attachment{ev.Message.Message.Attachment}),
+		}
 		h.received(ctx, contactID, m, ev.Contact.Assignee.ID)
-	case eventSent:
-		h.sent(ctx, m, ev.Sender.Source)
 	}
 }
 

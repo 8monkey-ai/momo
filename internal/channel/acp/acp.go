@@ -34,7 +34,7 @@ func (a acp) Routes() []channel.Route { return a.routes }
 // New configures the ACP channel: one endpoint serving POST, GET and DELETE,
 // with every request authenticated by a bearer token. An ACP client is a program
 // that speaks for itself, so the channel records no history of its own.
-func New(lifetime context.Context, decode channel.Decoder, h core.Handler, _ core.History) (channel.Channel, error) {
+func New(lifetime context.Context, decode channel.Decoder, h core.Handler, _ core.History, _ core.ConversationFiles) (channel.Channel, error) {
 	s := settings{Path: "/v1/acp", ConnectionGrace: 5 * time.Minute}
 	if err := decode(&s); err != nil {
 		return nil, err

@@ -61,7 +61,7 @@ type apiRequest struct {
 
 func newAPI(t *testing.T) *api {
 	t.Helper()
-	a := &api{status: http.StatusOK, requests: make(chan apiRequest, 4)}
+	a := &api{status: http.StatusOK, requests: make(chan apiRequest, 16)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		a.requests <- apiRequest{
@@ -122,27 +122,162 @@ func TestReplySendsATextMessageToTheContact(t *testing.T) {
 	}
 }
 
-func TestReplyDropsBlocksRespondIoCannotCarry(t *testing.T) {
-	a := newAPI(t)
-	content := []core.ContentBlock{
-		{Type: "image", Data: "AAAA", MimeType: "image/png"},
-		{Type: "text", Text: "look"},
-	}
-	if err := a.client().reply("7")(context.Background(), content); err != nil {
-		t.Fatalf("reply: %v", err)
-	}
-	if got := a.next(t).body; got != `{"message":{"text":"look","type":"text"}}` {
-		t.Fatalf("body = %s, want the text block only", got)
+func TestReplySendsTypedAttachments(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block core.ContentBlock
+		kind  string
+	}{
+		{name: "image MIME", block: core.ContentBlock{Type: "image", URI: "https://files.example/photo", MimeType: "image/png"}, kind: "image"},
+		{name: "resource link image", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/photo", MimeType: "image/webp"}, kind: "image"},
+		{name: "resource link video", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/movie", MimeType: "video/mp4"}, kind: "video"},
+		{name: "resource link audio", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/sound", MimeType: "audio/mpeg"}, kind: "audio"},
+		{name: "resource link file", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/report", MimeType: "application/pdf"}, kind: "file"},
+		{name: "embedded resource", block: core.ContentBlock{Type: "resource", Resource: &core.Resource{URI: "https://files.example/movie", MimeType: "video/mp4"}}, kind: "video"},
+		{name: "extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/PHOTO.PNG?download=1#view"}, kind: "image"},
+		{name: "unknown extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/archive.unknownext"}, kind: "file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAPI(t)
+			if err := a.client().reply("7")(context.Background(), []core.ContentBlock{tc.block}); err != nil {
+				t.Fatalf("reply: %v", err)
+			}
+			uri := tc.block.URI
+			if tc.block.Resource != nil {
+				uri = tc.block.Resource.URI
+			}
+			want := `{"message":{"attachment":{"type":"` + tc.kind + `","url":"` + uri + `"},"type":"attachment"}}`
+			if got := a.next(t).body; got != want {
+				t.Fatalf("body = %s, want %s", got, want)
+			}
+			a.silent(t)
+		})
 	}
 }
 
-func TestReplyWithNothingToSayMakesNoCall(t *testing.T) {
+func TestReplyRejectsBlocksWithoutAUsableURL(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block core.ContentBlock
+	}{
+		{name: "audio", block: core.ContentBlock{Type: "audio", Data: "AAAA", MimeType: "audio/mpeg"}},
+		{name: "data-only image", block: core.ContentBlock{Type: "image", Data: "AAAA", MimeType: "image/png"}},
+		{name: "resource link", block: core.ContentBlock{Type: "resource_link", URI: "file:///private/report.pdf", MimeType: "application/pdf"}},
+		{name: "embedded resource", block: core.ContentBlock{Type: "resource", Resource: &core.Resource{URI: "/report.pdf", MimeType: "application/pdf"}}},
+		{name: "nil resource", block: core.ContentBlock{Type: "resource"}},
+		{name: "unknown block", block: core.ContentBlock{Type: "future_block"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAPI(t)
+			err := a.client().reply("7")(context.Background(), []core.ContentBlock{tc.block})
+			if err == nil || !strings.Contains(err.Error(), "deliver") {
+				t.Fatalf("reply error = %v, want a delivery error", err)
+			}
+			if strings.Contains(err.Error(), "api-token") || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error leaks credentials or URI: %v", err)
+			}
+			a.silent(t)
+		})
+	}
+}
+
+func TestReplySplitsClassifiedTextURLsInOrder(t *testing.T) {
 	a := newAPI(t)
-	content := []core.ContentBlock{{Type: "image", Data: "AAAA", MimeType: "image/png"}}
+	text := "See https://files.example/PHOTO.PNG, then (https://files.example/movie.mp4?x=1#view)! unknown https://files.example/item.unknownext. file https://files.example/report.PDF; done"
+	if err := a.client().reply("7")(context.Background(), core.Text(text)); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	want := []string{
+		`{"message":{"text":"See ","type":"text"}}`,
+		`{"message":{"attachment":{"type":"image","url":"https://files.example/PHOTO.PNG"},"type":"attachment"}}`,
+		`{"message":{"text":", then (","type":"text"}}`,
+		`{"message":{"attachment":{"type":"video","url":"https://files.example/movie.mp4?x=1#view"},"type":"attachment"}}`,
+		`{"message":{"text":")! unknown https://files.example/item.unknownext. file ","type":"text"}}`,
+		`{"message":{"attachment":{"type":"file","url":"https://files.example/report.PDF"},"type":"attachment"}}`,
+		`{"message":{"text":"; done","type":"text"}}`,
+	}
+	for i, body := range want {
+		if got := a.next(t).body; got != body {
+			t.Fatalf("call %d body = %s, want %s", i+1, got, body)
+		}
+	}
+	a.silent(t)
+}
+
+func TestReplyPreservesBlockOrder(t *testing.T) {
+	a := newAPI(t)
+	content := []core.ContentBlock{
+		{Type: "text", Text: "first"},
+		{Type: "resource_link", URI: "https://files.example/report.pdf", MimeType: "application/pdf"},
+		{Type: "text", Text: "last"},
+	}
 	if err := a.client().reply("7")(context.Background(), content); err != nil {
 		t.Fatalf("reply: %v", err)
 	}
+	want := []string{
+		`{"message":{"text":"first","type":"text"}}`,
+		`{"message":{"attachment":{"type":"file","url":"https://files.example/report.pdf"},"type":"attachment"}}`,
+		`{"message":{"text":"last","type":"text"}}`,
+	}
+	for i, body := range want {
+		if got := a.next(t).body; got != body {
+			t.Fatalf("call %d body = %s, want %s", i+1, got, body)
+		}
+	}
 	a.silent(t)
+}
+
+func TestReplyStopsAfterAnInvalidBlock(t *testing.T) {
+	a := newAPI(t)
+	content := []core.ContentBlock{
+		{Type: "text", Text: "sent"},
+		{Type: "image", Data: "AAAA", MimeType: "image/png"},
+		{Type: "text", Text: "not sent"},
+	}
+	if err := a.client().reply("7")(context.Background(), content); err == nil {
+		t.Fatal("reply succeeded")
+	}
+	if got := a.next(t).body; got != `{"message":{"text":"sent","type":"text"}}` {
+		t.Fatalf("first body = %s", got)
+	}
+	a.silent(t)
+}
+
+func TestReplyStopsAfterAnAPIFailure(t *testing.T) {
+	requests := make(chan apiRequest, 3)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- apiRequest{body: string(body)}
+		calls++
+		if calls == 2 {
+			http.Error(w, "failed", http.StatusBadGateway)
+		}
+	}))
+	defer srv.Close()
+	c := &client{url: srv.URL, token: "secret-token", http: srv.Client()}
+	content := []core.ContentBlock{
+		{Type: "text", Text: "sent"},
+		{Type: "resource_link", URI: "https://files.example/report.pdf", MimeType: "application/pdf"},
+		{Type: "text", Text: "not sent"},
+	}
+
+	err := c.reply("7")(context.Background(), content)
+	if err == nil || !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("reply error = %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("error leaks token: %v", err)
+	}
+	if got := len(requests); got != 2 {
+		t.Fatalf("calls = %d, want 2", got)
+	}
+	if got := (<-requests).body; got != `{"message":{"text":"sent","type":"text"}}` {
+		t.Fatalf("first body = %s", got)
+	}
+	if got := (<-requests).body; got != `{"message":{"attachment":{"type":"file","url":"https://files.example/report.pdf"},"type":"attachment"}}` {
+		t.Fatalf("second body = %s", got)
+	}
 }
 
 func TestReplyReportsARefusal(t *testing.T) {
@@ -235,7 +370,7 @@ func TestNewDefaultsTheAPIURL(t *testing.T) {
 		s.APIToken = "api-token"
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{}, nil)
+	c, err := New(context.Background(), decode, capture{}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

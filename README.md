@@ -119,6 +119,9 @@ channels:
     # leaves every conversation to momo. A value other than 0 needs the
     # session_history_sync block. Default: 0
     momo_assignee_id: 0
+    # Largest inbound file, in decimal bytes. Must be positive.
+    # Default: 20000000
+    max_attachment_bytes: 20000000
     # How momo delivers a reply on this channel. Every channel takes the block,
     # and the defaults send the whole reply as one message.
     delivery:
@@ -201,11 +204,38 @@ Both webhooks may also deliver event types momo does not act on, such as contact
 momo accepts and ignores them, so respond.io does not retry them and new event types
 respond.io adds later need no upgrade on your side.
 
-momo answers an incoming message with one call to respond.io's send-a-message API,
-`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. An outgoing
-message (`message.sent`) is logged and answered by nothing: momo's own replies arrive as
-one, and answering them would make momo talk to itself. With session history sync the
-outgoing messages of your team reach the agent's session as well.
+momo answers through respond.io's send-a-message API,
+`POST {api_url}/contact/id:{contact}/message`, authenticated with `api_token`. momo makes
+more than one call when a reply contains attachments or mixed text and URLs.
+
+momo acknowledges a valid webhook before it starts any attachment download. An inbound
+attachment and every redirect must use an absolute HTTP or HTTPS URL. For a
+`message.received` event in a conversation momo owns, momo saves the file in that
+conversation's directory under `agent.data_dir`. It then gives the agent an ACP resource
+link to the saved file. `max_attachment_bytes` sets the limit for each file.
+
+If one file cannot be downloaded or saved, momo replaces it with text in this form:
+`Attachment "name" is unavailable: reason.` The agent turn still runs, and any other files
+that succeeded remain available to the agent.
+
+An agent can send an ACP image, resource link, or embedded resource as a respond.io
+attachment when the block has a usable public HTTP or HTTPS URL. momo uses the ACP MIME
+type to select `image`, `video`, `audio`, or `file`. If the block has no MIME type, momo
+uses a known, case-insensitive extension from the URL path. Query text and fragments do
+not affect this check.
+
+momo applies the same extension check to HTTP and HTTPS URLs in ACP text blocks. It sends
+each known image, video, audio, or file URL as an attachment at its position in the text.
+It sends the non-empty text around those URLs as separate calls, in order. A URL with an
+unknown extension stays in the text. momo does not fetch text URLs to inspect their type.
+It stops the reply after the first invalid part or failed API call.
+
+momo cannot upload or host data-only ACP image, audio, or resource blocks. Such a block
+makes delivery fail. ACP audio blocks always have this limit because ACP audio has no URI.
+
+An outgoing message (`message.sent`) is logged and answered by nothing. momo's own replies
+arrive as one, and answering them would make momo talk to itself. With session history
+sync, the outgoing messages of your team reach the agent's session as well.
 
 ## Hand a conversation to a human
 
@@ -258,7 +288,8 @@ Known limits:
 - momo reads the assignee of the message respond.io delivered, and asks the respond.io API
   for nothing. A conversation reassigned between two messages is answered by whoever holds
   it at the next message.
-- Attachments, and every content block that is not text, stay out of the session.
+- History records omit attachments and every content block that is not text. An attachment
+  in a conversation another assignee owns does not enter the session.
 - The ACP channel records nothing: an ACP client speaks for itself, and no human answers
   in its place.
 - `momo_assignee_id` without `session_history_sync` is refused at startup: the
