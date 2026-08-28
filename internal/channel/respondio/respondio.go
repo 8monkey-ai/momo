@@ -12,7 +12,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/8monkey-ai/momo/internal/channel"
@@ -107,13 +109,16 @@ func New(_ context.Context, decode channel.Decoder, h core.Handler, history core
 }
 
 type webhook struct {
-	secret             string
-	core               core.Handler
-	history            core.History
-	client             *client
-	files              core.ConversationFiles
-	momoAssigneeID     int64
-	maxAttachmentBytes int64
+	secret              string
+	core                core.Handler
+	history             core.History
+	client              *client
+	files               core.ConversationFiles
+	momoAssigneeID      int64
+	maxAttachmentBytes  int64
+	allowAttachmentAddr func(netip.Addr) bool
+	downloadOnce        sync.Once
+	attachmentClient    *http.Client
 }
 
 type event struct {
@@ -176,12 +181,18 @@ func (h *webhook) dispatch(ctx context.Context, ev event) {
 			h.sent(ctx, m, ev.Sender.Source)
 		}
 	case attachmentMessage:
-		if ev.EventType != eventReceived || !h.owns(ev.Contact.Assignee.ID) {
+		if ev.EventType != eventReceived {
+			return
+		}
+		item := ev.Message.Message.Attachment
+		if !h.owns(ev.Contact.Assignee.ID) {
+			m := core.Message{Conversation: contactID, Content: []core.ContentBlock{receivedAttachment(item)}}
+			h.received(ctx, contactID, m, ev.Contact.Assignee.ID)
 			return
 		}
 		m := core.Message{
 			Conversation: contactID,
-			Content:      h.attachmentContent(ctx, contactID, []attachment{ev.Message.Message.Attachment}),
+			Content:      h.attachmentContent(ctx, contactID, []attachment{item}),
 		}
 		h.received(ctx, contactID, m, ev.Contact.Assignee.ID)
 	}

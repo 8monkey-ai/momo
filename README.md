@@ -209,7 +209,9 @@ momo answers through respond.io's send-a-message API,
 more than one call when a reply contains attachments or mixed text and URLs.
 
 momo acknowledges a valid webhook before it starts any attachment download. An inbound
-attachment and every redirect must use an absolute HTTP or HTTPS URL. For a
+attachment and every redirect must use an absolute HTTP or HTTPS URL and resolve to a
+public Internet address. momo checks the resolved address when it opens each connection,
+does not use an HTTP proxy, and rejects private and special-use destinations. For a
 `message.received` event in a conversation momo owns, momo saves the file in that
 conversation's directory under `agent.data_dir`. It then gives the agent an ACP resource
 link to the saved file. `max_attachment_bytes` sets the limit for each file.
@@ -267,14 +269,16 @@ Who owns a conversation decides what momo does with an incoming message:
 Without `momo_assignee_id`, or with it set to 0, every conversation is momo's. A momo that
 answers a conversation records nothing: the turn puts the message in the session itself.
 
-momo records two kinds of message:
+momo records three kinds of message:
 
 - the text a contact sent while another assignee held the conversation, as a user message
+- `Attachment "name" received.` for an attachment a contact sent while another assignee
+  held the conversation, as a user message
 - the text a respond.io user or a respond.io workflow sent, as an assistant message
 
-Text only, and each record is one line: a line break in the message reaches the command as
-a space. Attachments are not recorded, and momo's own replies are not recorded a second
-time.
+Each record is one line. A line break in text reaches the command as a space. momo does not
+download or store an attachment that it records. It ignores attachments sent by respond.io
+users and workflows, and it does not record momo's own replies a second time.
 
 A record reaches nobody but the agent. A record that fails is reported in momo's log, as
 `history record failed` with the conversation and the reason, and never to the contact and
@@ -288,8 +292,8 @@ Known limits:
 - momo reads the assignee of the message respond.io delivered, and asks the respond.io API
   for nothing. A conversation reassigned between two messages is answered by whoever holds
   it at the next message.
-- History records omit attachments and every content block that is not text. An attachment
-  in a conversation another assignee owns does not enter the session.
+- History records omit content blocks that are not text. An attachment in a conversation
+  another assignee owns enters the session only as `Attachment "name" received.`
 - The ACP channel records nothing: an ACP client speaks for itself, and no human answers
   in its place.
 - `momo_assignee_id` without `session_history_sync` is refused at startup: the

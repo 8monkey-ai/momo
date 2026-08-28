@@ -126,29 +126,24 @@ func TestReplySendsTypedAttachments(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		block core.ContentBlock
-		kind  string
+		want  string
 	}{
-		{name: "image MIME", block: core.ContentBlock{Type: "image", URI: "https://files.example/photo", MimeType: "image/png"}, kind: "image"},
-		{name: "resource link image", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/photo", MimeType: "image/webp"}, kind: "image"},
-		{name: "resource link video", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/movie", MimeType: "video/mp4"}, kind: "video"},
-		{name: "resource link audio", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/sound", MimeType: "audio/mpeg"}, kind: "audio"},
-		{name: "resource link file", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/report", MimeType: "application/pdf"}, kind: "file"},
-		{name: "embedded resource", block: core.ContentBlock{Type: "resource", Resource: &core.Resource{URI: "https://files.example/movie", MimeType: "video/mp4"}}, kind: "video"},
-		{name: "extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/PHOTO.PNG?download=1#view"}, kind: "image"},
-		{name: "unknown extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/archive.unknownext"}, kind: "file"},
+		{name: "image MIME", block: core.ContentBlock{Type: "image", URI: "https://files.example/photo", MimeType: "image/png"}, want: `{"message":{"attachment":{"type":"image","url":"https://files.example/photo"},"type":"attachment"}}`},
+		{name: "resource link image", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/photo", MimeType: "image/webp"}, want: `{"message":{"attachment":{"type":"image","url":"https://files.example/photo"},"type":"attachment"}}`},
+		{name: "resource link video", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/movie", MimeType: "video/mp4"}, want: `{"message":{"attachment":{"type":"video","url":"https://files.example/movie"},"type":"attachment"}}`},
+		{name: "resource link audio", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/sound", MimeType: "audio/mpeg"}, want: `{"message":{"attachment":{"type":"audio","url":"https://files.example/sound"},"type":"attachment"}}`},
+		{name: "resource link file", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/report", MimeType: "application/pdf"}, want: `{"message":{"attachment":{"type":"file","url":"https://files.example/report"},"type":"attachment"}}`},
+		{name: "embedded resource", block: core.ContentBlock{Type: "resource", Resource: &core.Resource{URI: "https://files.example/movie", MimeType: "video/mp4"}}, want: `{"message":{"attachment":{"type":"video","url":"https://files.example/movie"},"type":"attachment"}}`},
+		{name: "extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/PHOTO.PNG?download=1#view"}, want: `{"message":{"attachment":{"type":"image","url":"https://files.example/PHOTO.PNG?download=1#view"},"type":"attachment"}}`},
+		{name: "unknown extension fallback", block: core.ContentBlock{Type: "resource_link", URI: "https://files.example/archive.unknownext"}, want: `{"message":{"attachment":{"type":"file","url":"https://files.example/archive.unknownext"},"type":"attachment"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAPI(t)
 			if err := a.client().reply("7")(context.Background(), []core.ContentBlock{tc.block}); err != nil {
 				t.Fatalf("reply: %v", err)
 			}
-			uri := tc.block.URI
-			if tc.block.Resource != nil {
-				uri = tc.block.Resource.URI
-			}
-			want := `{"message":{"attachment":{"type":"` + tc.kind + `","url":"` + uri + `"},"type":"attachment"}}`
-			if got := a.next(t).body; got != want {
-				t.Fatalf("body = %s, want %s", got, want)
+			if got := a.next(t).body; got != tc.want {
+				t.Fatalf("body = %s, want %s", got, tc.want)
 			}
 			a.silent(t)
 		})

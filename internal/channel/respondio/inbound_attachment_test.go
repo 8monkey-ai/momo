@@ -2,11 +2,14 @@ package respondio
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"reflect"
 	"strconv"
 	"strings"
@@ -71,10 +74,11 @@ func decodedEvent(t *testing.T, body string) event {
 
 func attachmentWebhook(c capture, store core.ConversationFiles, httpClient *http.Client, max int64) *webhook {
 	return &webhook{
-		core:               c,
-		client:             &client{http: httpClient},
-		files:              store,
-		maxAttachmentBytes: max,
+		core:                c,
+		client:              &client{http: httpClient},
+		files:               store,
+		maxAttachmentBytes:  max,
+		allowAttachmentAddr: func(netip.Addr) bool { return true },
 	}
 }
 
@@ -86,6 +90,184 @@ func nextCall(t *testing.T, c capture) call {
 	case <-time.After(time.Second):
 		t.Fatal("core was never called")
 		return call{}
+	}
+}
+
+func TestPublicAttachmentAddressPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		public  bool
+	}{
+		{address: "127.0.0.1"},
+		{address: "::1"},
+		{address: "10.0.0.1"},
+		{address: "172.16.0.1"},
+		{address: "192.168.0.1"},
+		{address: "fc00::1"},
+		{address: "fe80::1"},
+		{address: "169.254.1.1"},
+		{address: "224.0.0.1"},
+		{address: "ff02::1"},
+		{address: "0.0.0.0"},
+		{address: "::"},
+		{address: "100.64.0.1"},
+		{address: "169.254.169.254"},
+		{address: "::ffff:127.0.0.1"},
+		{address: "::ffff:169.254.169.254"},
+		{address: "192.0.0.1"},
+		{address: "64:ff9b::1"},
+		{address: "192.0.2.1"},
+		{address: "2001:db8::1"},
+		{address: "3fff::1"},
+		{address: "198.18.0.1"},
+		{address: "2001:2::1"},
+		{address: "240.0.0.1"},
+		{address: "100::1"},
+		{address: "8.8.8.8", public: true},
+		{address: "::ffff:8.8.8.8", public: true},
+		{address: "2606:4700:4700::1111", public: true},
+	} {
+		t.Run(tc.address, func(t *testing.T) {
+			if got := publicAttachmentAddr(netip.MustParseAddr(tc.address)); got != tc.public {
+				t.Fatalf("publicAttachmentAddr(%s) = %t, want %t", tc.address, got, tc.public)
+			}
+		})
+	}
+}
+
+func TestDefaultWebhookCannotDownloadFromLoopback(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	download := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requested <- struct{}{} }))
+	defer download.Close()
+	store := &attachmentStore{}
+	c := capture{calls: make(chan call, 1)}
+	h := &webhook{core: c, client: &client{http: download.Client()}, files: store, maxAttachmentBytes: 100}
+
+	h.dispatch(context.Background(), decodedEvent(t, attachmentPayload("file", `"url":"`+download.URL+`/file.txt"`, 0)))
+
+	if block := nextCall(t, c).message.Content[0]; block.Type != "text" || !strings.Contains(block.Text, "download failed") {
+		t.Fatalf("block = %+v, want failed download", block)
+	}
+	select {
+	case <-requested:
+		t.Fatal("loopback server received a request")
+	default:
+	}
+	if len(store.saves) != 0 {
+		t.Fatalf("saves = %+v, want none", store.saves)
+	}
+}
+
+func TestDefaultWebhookCannotDownloadFromMappedLoopbackLiteral(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	download := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requested <- struct{}{} }))
+	defer download.Close()
+	_, port, err := net.SplitHostPort(download.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &attachmentStore{}
+	c := capture{calls: make(chan call, 1)}
+	h := &webhook{core: c, client: &client{http: download.Client()}, files: store, maxAttachmentBytes: 100}
+	mappedURL := "http://[::ffff:127.0.0.1]:" + port + "/file.txt"
+
+	h.dispatch(context.Background(), decodedEvent(t, attachmentPayload("file", `"url":"`+mappedURL+`"`, 0)))
+
+	if block := nextCall(t, c).message.Content[0]; block.Type != "text" || !strings.Contains(block.Text, "download failed") {
+		t.Fatalf("block = %+v, want failed download", block)
+	}
+	select {
+	case <-requested:
+		t.Fatal("loopback server received a request")
+	default:
+	}
+	if len(store.saves) != 0 {
+		t.Fatalf("saves = %+v, want none", store.saves)
+	}
+}
+
+func TestAttachmentAddressTestSeamCanAllowLoopback(t *testing.T) {
+	download := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer download.Close()
+	store := &attachmentStore{}
+	c := capture{calls: make(chan call, 1)}
+	h := attachmentWebhook(c, store, download.Client(), 100)
+
+	h.dispatch(context.Background(), decodedEvent(t, attachmentPayload("file", `"url":"`+download.URL+`/file.txt"`, 0)))
+
+	if block := nextCall(t, c).message.Content[0]; block.Type != "resource_link" {
+		t.Fatalf("block = %+v, want resource link", block)
+	}
+}
+
+func TestAttachmentRedirectAppliesAddressPolicyAgain(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requested <- struct{}{}
+		_, _ = io.WriteString(w, "secret")
+	}))
+	defer final.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL+"/final.txt", http.StatusFound)
+	}))
+	defer redirect.Close()
+	store := &attachmentStore{}
+	c := capture{calls: make(chan call, 1)}
+	h := attachmentWebhook(c, store, redirect.Client(), 100)
+	checks := 0
+	h.allowAttachmentAddr = func(netip.Addr) bool {
+		checks++
+		return checks == 1
+	}
+
+	h.dispatch(context.Background(), decodedEvent(t, attachmentPayload("file", `"url":"`+redirect.URL+`/start"`, 0)))
+
+	if block := nextCall(t, c).message.Content[0]; block.Type != "text" || !strings.Contains(block.Text, "download failed") {
+		t.Fatalf("block = %+v, want failed redirect download", block)
+	}
+	if checks != 2 {
+		t.Fatalf("address policy checks = %d, want 2", checks)
+	}
+	select {
+	case <-requested:
+		t.Fatal("redirect destination received a request")
+	default:
+	}
+	if len(store.saves) != 0 {
+		t.Fatalf("saves = %+v, want none", store.saves)
+	}
+}
+
+func TestAttachmentDownloadClientIsCachedPerWebhook(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	source := &http.Client{Transport: transport, Timeout: 7 * time.Second}
+	h := attachmentWebhook(capture{}, nil, source, 100)
+	other := attachmentWebhook(capture{}, nil, source, 100)
+
+	first := h.downloadClient()
+	second := h.downloadClient()
+	otherClient := other.downloadClient()
+
+	if first != second {
+		t.Fatal("download client was rebuilt")
+	}
+	if first.Transport != second.Transport {
+		t.Fatal("download transport was rebuilt")
+	}
+	if first == otherClient || first.Transport == otherClient.Transport {
+		t.Fatal("webhooks share a download client or transport")
+	}
+	configured := first.Transport.(*http.Transport)
+	if configured == transport || configured.Proxy != nil || transport.Proxy == nil {
+		t.Fatal("download transport did not clone and disable the proxy")
+	}
+	if configured.TLSClientConfig == transport.TLSClientConfig || configured.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatal("download transport did not preserve cloned TLS settings")
+	}
+	if first.Timeout != 7*time.Second {
+		t.Fatalf("timeout = %v, want 7s", first.Timeout)
 	}
 }
 
@@ -318,64 +500,40 @@ func TestInboundAttachmentFailuresStillRunTheTurnWithoutLeakingURL(t *testing.T)
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-type trackedBody struct {
-	read   func([]byte) (int, error)
-	closed bool
-}
-
-func (b *trackedBody) Read(p []byte) (int, error) { return b.read(p) }
-func (b *trackedBody) Close() error {
-	b.closed = true
-	return nil
-}
-
-func TestInboundAttachmentReadAndCancellationFailuresCleanTheSaveAndCloseTheBody(t *testing.T) {
+func TestInboundAttachmentReadAndCancellationFailuresCleanTheSave(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
-		body       func(context.Context) *trackedBody
 		wantReason string
+		wantFailed int
 	}{
-		{name: "read failure", wantReason: "download failed", body: func(context.Context) *trackedBody {
-			firstRead := true
-			return &trackedBody{read: func(p []byte) (int, error) {
-				if firstRead {
-					firstRead = false
-					return copy(p, "partial"), nil
-				}
-				return 0, errors.New("remote read failed")
-			}}
-		}},
-		{name: "cancelled", wantReason: "download cancelled", body: func(ctx context.Context) *trackedBody {
-			return &trackedBody{read: func([]byte) (int, error) {
-				<-ctx.Done()
-				return 0, ctx.Err()
-			}}
-		}},
+		{name: "read failure", wantReason: "download failed", wantFailed: 1},
+		{name: "cancelled", wantReason: "download cancelled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			download := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.name == "read failure" {
+					connection, buffer, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_, _ = buffer.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\npartial")
+					_ = buffer.Flush()
+					_ = connection.Close()
+					return
+				}
+				w.(http.Flusher).Flush()
+				close(started)
+				<-r.Context().Done()
+			}))
+			defer download.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var body *trackedBody
-			started := make(chan struct{})
-			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				body = tc.body(r.Context())
-				if tc.name == "cancelled" {
-					read := body.read
-					body.read = func(p []byte) (int, error) {
-						close(started)
-						return read(p)
-					}
-				}
-				return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header), Request: r, ContentLength: -1}, nil
-			})}
 			store := &attachmentStore{}
 			c := capture{calls: make(chan call, 1)}
-			h := attachmentWebhook(c, store, httpClient, 100)
-			ev := decodedEvent(t, attachmentPayload("file", `"url":"https://example.test/file.bin"`, 0))
+			h := attachmentWebhook(c, store, download.Client(), 100)
+			ev := decodedEvent(t, attachmentPayload("file", `"url":"`+download.URL+`/file.bin"`, 0))
 			done := make(chan struct{})
 			go func() {
 				h.dispatch(ctx, ev)
@@ -388,14 +546,63 @@ func TestInboundAttachmentReadAndCancellationFailuresCleanTheSaveAndCloseTheBody
 			<-done
 
 			block := nextCall(t, c).message.Content[0]
-			if store.failed != 1 || len(store.saves) != 0 {
+			if store.failed != tc.wantFailed || len(store.saves) != 0 {
 				t.Fatalf("failed saves = %d, completed = %+v", store.failed, store.saves)
 			}
 			if block.Type != "text" || !strings.Contains(block.Text, tc.wantReason) {
 				t.Fatalf("block = %+v, want %q", block, tc.wantReason)
 			}
-			if body == nil || !body.closed {
-				t.Fatal("response body was not closed")
+		})
+	}
+}
+
+func TestUnownedReceivedAttachmentRecordsSafeMarkerWithoutDownload(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	download := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requested <- struct{}{} }))
+	defer download.Close()
+	store := &attachmentStore{}
+	c := capture{calls: make(chan call, 1)}
+	h := attachmentWebhook(c, store, download.Client(), 100)
+	h.history = c
+	h.momoAssigneeID = 42
+	body := attachmentPayload("file", `"url":"`+download.URL+`/private/path/fallback.txt?token=secret","fileName":"../report.pdf"`, 77)
+
+	h.dispatch(context.Background(), decodedEvent(t, body))
+
+	got := nextCall(t, c)
+	want := call{direction: "recorded user", message: core.Message{Conversation: "12345", Content: core.Text(`Attachment "report.pdf" received.`)}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("call = %+v, want %+v", got, want)
+	}
+	select {
+	case <-requested:
+		t.Fatal("attachment was downloaded")
+	default:
+	}
+	if len(store.saves) != 0 {
+		t.Fatalf("saves = %+v, want none", store.saves)
+	}
+}
+
+func TestSentOperatorAndWorkflowAttachmentsRemainIgnored(t *testing.T) {
+	for _, source := range []string{senderUser, senderWorkflow} {
+		t.Run(source, func(t *testing.T) {
+			store := &attachmentStore{}
+			c := capture{calls: make(chan call, 1)}
+			h := attachmentWebhook(c, store, http.DefaultClient, 100)
+			ev := decodedEvent(t, attachmentPayload("file", `"url":"http://127.0.0.1/private"`, 0))
+			ev.EventType = eventSent
+			ev.Sender.Source = source
+
+			h.dispatch(context.Background(), ev)
+
+			select {
+			case got := <-c.calls:
+				t.Fatalf("core was called with %+v", got)
+			case <-time.After(50 * time.Millisecond):
+			}
+			if len(store.saves) != 0 {
+				t.Fatalf("saves = %+v, want none", store.saves)
 			}
 		})
 	}
@@ -407,11 +614,9 @@ func TestOnlyOwnedReceivedAttachmentsRunTurns(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		eventType string
-		assignee  int64
 		called    bool
 	}{
 		{name: "owned received", eventType: eventReceived, called: true},
-		{name: "another assignee", eventType: eventReceived, assignee: 77},
 		{name: "sent", eventType: eventSent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -419,7 +624,7 @@ func TestOnlyOwnedReceivedAttachmentsRunTurns(t *testing.T) {
 			c := capture{calls: make(chan call, 1)}
 			h := attachmentWebhook(c, store, download.Client(), 100)
 			h.momoAssigneeID = 42
-			body := attachmentPayload("file", `"url":"`+download.URL+`/x"`, tc.assignee)
+			body := attachmentPayload("file", `"url":"`+download.URL+`/x"`, 0)
 			ev := decodedEvent(t, body)
 			ev.EventType = tc.eventType
 

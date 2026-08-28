@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"strings"
@@ -18,6 +20,30 @@ import (
 var (
 	errAttachmentTooLarge = errors.New("attachment is too large")
 	errInvalidRedirect    = errors.New("invalid attachment redirect")
+	blockedAttachmentNets = [...]netip.Prefix{
+		netip.MustParsePrefix("100.64.0.0/10"),
+		netip.MustParsePrefix("192.0.0.0/24"),
+		netip.MustParsePrefix("192.0.2.0/24"),
+		netip.MustParsePrefix("192.31.196.0/24"),
+		netip.MustParsePrefix("192.52.193.0/24"),
+		netip.MustParsePrefix("192.88.99.0/24"),
+		netip.MustParsePrefix("192.175.48.0/24"),
+		netip.MustParsePrefix("198.18.0.0/15"),
+		netip.MustParsePrefix("198.51.100.0/24"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("240.0.0.0/4"),
+		netip.MustParsePrefix("64:ff9b::/96"),
+		netip.MustParsePrefix("64:ff9b:1::/48"),
+		netip.MustParsePrefix("100::/64"),
+		netip.MustParsePrefix("100:0:0:1::/64"),
+		netip.MustParsePrefix("2001::/23"),
+		netip.MustParsePrefix("2001:2::/48"),
+		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("2002::/16"),
+		netip.MustParsePrefix("2620:4f:8000::/48"),
+		netip.MustParsePrefix("3fff::/20"),
+		netip.MustParsePrefix("5f00::/16"),
+	}
 )
 
 type attachment struct {
@@ -106,21 +132,76 @@ func attachmentSaveFailure(err error, reader *attachmentReader) string {
 }
 
 func (h *webhook) downloadClient() *http.Client {
-	client := *h.client.http
-	original := client.CheckRedirect
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if _, err := validAttachmentURL(req.URL.String()); err != nil {
-			return errInvalidRedirect
+	h.downloadOnce.Do(func() {
+		client := *h.client.http
+		transport := http.DefaultTransport.(*http.Transport)
+		if configured, ok := client.Transport.(*http.Transport); ok {
+			transport = configured
 		}
-		if original != nil {
-			return original(req, via)
+		transport = transport.Clone()
+		transport.Proxy = nil
+		transport.DialContext = h.dialAttachment
+		client.Transport = transport
+		original := client.CheckRedirect
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if _, err := validAttachmentURL(req.URL.String()); err != nil {
+				return errInvalidRedirect
+			}
+			if original != nil {
+				return original(req, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			return nil
 		}
-		if len(via) >= 10 {
-			return errors.New("too many redirects")
-		}
-		return nil
+		h.attachmentClient = &client
+	})
+	return h.attachmentClient
+}
+
+func (h *webhook) dialAttachment(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
 	}
-	return &client
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	allow := h.allowAttachmentAddr
+	if allow == nil {
+		allow = publicAttachmentAddr
+	}
+	var dialErr error
+	for _, candidate := range addresses {
+		candidate = candidate.Unmap()
+		if !allow(candidate) {
+			continue
+		}
+		connection, err := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(candidate.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		dialErr = err
+	}
+	if dialErr != nil {
+		return nil, dialErr
+	}
+	return nil, errors.New("attachment destination is not public")
+}
+
+func publicAttachmentAddr(address netip.Addr) bool {
+	address = address.Unmap()
+	if !address.IsValid() || !address.IsGlobalUnicast() || address.IsPrivate() {
+		return false
+	}
+	for _, blocked := range blockedAttachmentNets {
+		if blocked.Contains(address) {
+			return false
+		}
+	}
+	return true
 }
 
 func validAttachmentURL(raw string) (*url.URL, error) {
@@ -201,6 +282,12 @@ func safeDisplayName(name string) string {
 		return "attachment"
 	}
 	return name
+}
+
+func receivedAttachment(item attachment) core.ContentBlock {
+	parsed, _ := url.Parse(item.URL)
+	name := nameFromURL(first(item.Name, item.FileName), parsed)
+	return core.ContentBlock{Type: "text", Text: fmt.Sprintf("Attachment %q received.", name)}
 }
 
 func unavailable(name, reason string) core.ContentBlock {
