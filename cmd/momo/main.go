@@ -116,7 +116,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config.Config, l net.List
 	if err != nil {
 		return fmt.Errorf("session history sync: %w", err)
 	}
-	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history)
+	instances, err := channel.Build(lifetime, cfg.Channels, core.NewHandler(log, a), history, a)
 	if err != nil {
 		return err
 	}

@@ -470,21 +470,21 @@ func TestPromptReachesTheCoreWithItsBlocksAsSent(t *testing.T) {
 	h := newHarness(t)
 	connID, sessionID, connStream, sessionStream := h.session(t)
 
-	// An audio block and a resource link are block types momo does not read; they
-	// travel to the core unchanged.
 	prompt := `{"sessionId":"` + sessionID + `","prompt":[` +
 		`{"type":"text","text":"hello"},` +
 		`{"type":"audio","data":"AAAA","mimeType":"audio/wav"},` +
-		`{"type":"resource","resource":{"uri":"file:///notes.md","text":"notes"}},` +
-		`{"type":"resource_link","uri":"file:///notes.md","name":"notes.md"}]}`
+		`{"type":"resource","resource":{"uri":"file:///notes.md","text":"notes","mimeType":"text/markdown"}},` +
+		`{"type":"resource_link","uri":"file:///notes.md","name":"notes.md","mimeType":"text/markdown","size":42}]}`
 	status(t, h.do(t, request{body: rpc(3, wire.MethodPrompt, prompt), connID: connID, sessionID: sessionID}),
 		http.StatusAccepted)
 
 	want := core.Message{Conversation: sessionID, Content: []core.ContentBlock{
 		{Type: "text", Text: "hello"},
 		{Type: "audio", Data: "AAAA", MimeType: "audio/wav"},
-		{Type: "resource", Resource: &core.Resource{URI: "file:///notes.md", Text: "notes"}},
-		{Type: "resource_link", URI: "file:///notes.md", Name: "notes.md"},
+		{Type: "resource", Resource: &core.Resource{
+			URI: "file:///notes.md", Text: "notes", MimeType: "text/markdown",
+		}},
+		{Type: "resource_link", URI: "file:///notes.md", Name: "notes.md", MimeType: "text/markdown", Size: 42},
 	}}
 	select {
 	case got := <-h.core.received:
@@ -583,7 +583,7 @@ func TestNewRejectsUnusableSettings(t *testing.T) {
 				tc.apply(v.(*settings))
 				return nil
 			}
-			if _, err := New(context.Background(), decode, capture{}, nil); err == nil {
+			if _, err := New(context.Background(), decode, capture{}, nil, nil); err == nil {
 				t.Fatal("New succeeded, want an error naming the unusable setting")
 			}
 		})
@@ -599,7 +599,7 @@ func TestNewServesTheConfiguredPath(t *testing.T) {
 		s.Token = token
 		return nil
 	}
-	c, err := New(context.Background(), decode, capture{}, nil)
+	c, err := New(context.Background(), decode, capture{}, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
